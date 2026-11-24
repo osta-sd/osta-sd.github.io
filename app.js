@@ -106,7 +106,7 @@ async function startSession(){
   V={name:'boot'};render();
   const id=USER.uid,got=new Set();
   const finish=()=>{if(!READY){READY=true;route()}};
-  const mark=k=>{got.add(k);if(got.size>=4)finish();else if(READY)onData()};
+  const mark=k=>{got.add(k);if(!READY&&got.size>=4)finish();else if(READY)onData()};
   const fail=e=>{NOTE=e&&e.code==='permission-denied'?'ما عندك صلاحية لقراءة بعض البيانات.':'تعذر تحميل البيانات. قد تكون القائمة قديمة.'};
   setTimeout(()=>{if(!READY){NOTE='تعذر الوصول لكل البيانات بعد. قد تكون القائمة قديمة.';finish()}},10000);
   try{const s=await getDoc(doc(db,'users',id));PROFILE=s.exists()?s.data():null}catch(e){fail(e)}
