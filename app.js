@@ -47,7 +47,7 @@ const CONFIGURED=firebaseConfig&&firebaseConfig.apiKey&&!String(firebaseConfig.a
 let auth=null,db=null;
 let USER=null,PROFILE=null,READY=false,NOTE='';
 const TERMS_V=1;
-const SUPPORT_WA=''; /* رقم واتساب الدعم بصيغة دولية بدون + ، مثال: 249912345678 */
+const SUPPORT_WA='249117102435'; /* رقم واتساب الدعم بصيغة دولية بدون + ، مثال: 249912345678 */
 let D={techs:[],reviews:[],reqsC:[],reqsT:[],verifs:[],bans:[]};
 let ISADMIN=false,MYVREQ=false,ADM={users:[],reports:[],vreqs:[],reqs:[]};
 let PRIV={};
@@ -129,8 +129,8 @@ async function startSession(){
   unsubs.push(
     onSnapshot(collection(db,'techs'),s=>{D.techs=rows(s);mark('t')},e=>{fail(e);mark('t')}),
     onSnapshot(collectionGroup(db,'reviews'),s=>{D.reviews=s.docs.map(d=>Object.assign({id:d.id,techId:d.ref.parent.parent.id},d.data()));mark('v')},e=>{fail(e);mark('v')}),
-    onSnapshot(query(collection(db,'requests'),where('customerId','==',id)),s=>{D.reqsC=rows(s);mark('c')},e=>{fail(e);mark('c')}),
-    onSnapshot(query(collection(db,'requests'),where('techId','==',id)),s=>{D.reqsT=rows(s);mark('k')},e=>{fail(e);mark('k')}),
+    onSnapshot(query(collection(db,'requests'),where('customerId','==',id)),s=>{const nx=rows(s);alertStatus(D.reqsC,nx);D.reqsC=nx;mark('c')},e=>{fail(e);mark('c')}),
+    onSnapshot(query(collection(db,'requests'),where('techId','==',id)),s=>{const nx=rows(s);alertNew(D.reqsT,nx);D.reqsT=nx;mark('k')},e=>{fail(e);mark('k')}),
     onSnapshot(collection(db,'verifications'),s=>{D.verifs=rows(s);mark('f')},e=>{fail(e);mark('f')}),
     onSnapshot(collection(db,'bans'),s=>{D.bans=rows(s);mark('b')},e=>{fail(e);mark('b')}),
     onSnapshot(doc(db,'verifyRequests',id),s=>{MYVREQ=s.exists();mark('m')},e=>{mark('m')})
@@ -142,8 +142,40 @@ async function startSession(){
     onSnapshot(collection(db,'requests'),s=>{ADM.reqs=rows(s);upd()},fail)
   );
 }
+/* ---------- alerts (free, in-app) ---------- */
+function ping(msg){
+  toast(msg);
+  try{navigator.vibrate&&navigator.vibrate([200,100,200])}catch(e){}
+  try{const A=new (window.AudioContext||window.webkitAudioContext)(),o=A.createOscillator(),g=A.createGain();o.connect(g);g.connect(A.destination);o.frequency.value=880;g.gain.value=.08;o.start();setTimeout(()=>{o.stop();A.close()},250)}catch(e){}
+  try{if(document.hidden&&window.Notification&&Notification.permission==='granted'&&navigator.serviceWorker)navigator.serviceWorker.getRegistration().then(r=>r&&r.showNotification('أسطى',{body:msg,icon:'icon-192.png',badge:'icon-192.png'}))}catch(e){}
+}
+function alertNew(old,nx){
+  if(!READY)return;
+  const had=new Set(old.map(r=>r.id));
+  const n=nx.filter(r=>r.status==='sent'&&!had.has(r.id)).length;
+  if(n)ping(n===1?'وصلك طلب جديد':'وصلتك '+n+' طلبات جديدة');
+}
+function alertStatus(old,nx){
+  if(!READY)return;
+  const m=new Map(old.map(r=>[r.id,r.status]));
+  for(const r of nx){
+    const prev=m.get(r.id);
+    if(prev&&prev!==r.status){
+      const k=techById(r.techId),nm=k?k.name:'الفني';
+      const t={accepted:'قبل '+nm+' طلبك',rejected:'اعتذر '+nm+' عن طلبك',done:nm+' أنهى العمل وبانتظار الدفع'}[r.status];
+      if(t){ping(t);break}
+    }
+  }
+}
+function setBadge(){
+  const n=D.reqsT.filter(r=>r.status==='sent').length;
+  document.title=n?'('+n+') أسطى':'أسطى';
+  try{if(navigator.setAppBadge){n?navigator.setAppBadge(n):navigator.clearAppBadge()}}catch(e){}
+}
+
 function onData(){
   if(!READY)return;
+  setBadge();
   const v=V.name;
   if(['boot','login','setup','profile','signupC','signupT','request','accept','report','terms','account'].includes(v))return;
   if(v==='req'){
@@ -336,10 +368,10 @@ function vReq(){
   const idx=ORDER.indexOf(r.status);
   const tl=STEPS.map((s,i)=>`<li class="${i<idx?'done':i===idx?'now':''}">${s}</li>`).join('');
   let panel='';
-  if(r.status==='sent')panel=`<p>أرسلنا طلبك إلى ${esc(k.name)}. ستتحدث الحالة هنا عندما يرد.</p>`;
+  if(r.status==='sent')panel=`<p>أرسلنا طلبك إلى ${esc(k.name)}. ستتحدث الحالة هنا عندما يرد، ويصلك تنبيه وأنت فاتح التطبيق.</p><p class="muted small">إذا تأخر الرد كثيراً تقدر ترجع وتختار فنياً آخر.</p>`;
   else if(r.status==='rejected')panel=`<p>اعتذر ${esc(k.name)} عن هذا الطلب. تقدر تختار فنياً آخر.</p><button class="btn pri block" data-act="home">ابحث عن فني آخر</button>`;
   else if(r.status==='accepted')panel=`<p>قبل ${esc(k.name)} طلبك. تواصل معه لتتفقوا على الموعد والسعر.</p>
-    ${tp&&tp!=='loading'&&tp.phone?`<div class="acct"><div><div class="muted small">هاتف الفني</div><b id="tphone">${esc(tp.phone)}</b></div><button class="btn sec" data-act="copy" data-t="#tphone">نسخ</button></div>`:''}`;
+    ${tp&&tp!=='loading'&&tp.phone?`<div class="acct"><div><div class="muted small">هاتف الفني</div><b id="tphone">${esc(tp.phone)}</b></div><button class="btn sec" data-act="copy" data-t="#tphone">نسخ</button></div><a class="btn sec block" href="${waLink(tp.phone)}" target="_blank" rel="noopener">مراسلة الفني على واتساب</a>`:''}`;
   else if(r.status==='done'){
     if(r.pay==='كاش')panel=`<h3>الدفع</h3><p>تأكد من إنجاز العمل ثم ادفع للفني نقداً المبلغ المتفق عليه.</p>
       <button class="btn pri block" data-act="pay-cash" data-id="${esc(r.id)}">دفعت نقداً</button>`;
@@ -379,7 +411,7 @@ function trCard(r){
     <div class="row"><div class="row">${av(r.customerName)}<b>${esc(r.customerName)}</b></div></div>
     <p>${esc(r.desc)}</p>
     <div class="muted small">${esc(r.hood)} · ${esc(r.when)} · دفع ${esc(r.pay)}</div>
-    ${cp&&cp!=='loading'&&cp.phone?`<div class="small">هاتف العميل: <b style="direction:ltr;unicode-bidi:isolate">${esc(cp.phone)}</b></div>`:''}
+    ${cp&&cp!=='loading'&&cp.phone?`<div class="small">هاتف العميل: <b style="direction:ltr;unicode-bidi:isolate">${esc(cp.phone)}</b></div><a class="btn sec block" href="${waLink(cp.phone)}" target="_blank" rel="noopener">مراسلة العميل على واتساب</a>`:''}
     ${pills[r.status]?`<div>${pills[r.status]}</div>`:''}${act}
     <button class="linkbtn" data-act="report" data-id="${esc(r.customerId)}" data-name="${esc(r.customerName)}" data-rid="${esc(r.id)}">الإبلاغ عن هذا العميل</button></article>`}
 
@@ -391,6 +423,7 @@ function vTDash(){
   <div class="row between"><div><div class="muted">مرحباً</div><h2>${esc(m.name)}</h2>${vbadge(m.id)}<div class="muted">${tradeName(m.trade)} · ${esc(m.hood)}</div></div>
   <button class="toggle" data-act="avail" aria-pressed="${on}">${on?'متاح للعمل':'غير متاح'}</button></div>
 </div>
+${window.Notification&&Notification.permission==='default'?'<div class="card"><h3>فعّل التنبيهات</h3><p class="muted small">يصلك تنبيه بالطلبات الجديدة وصوت واهتزاز وأنت فاتح التطبيق، أو وهو في الخلفية.</p><button class="btn pri block" data-act="notif">تفعيل التنبيهات</button></div>':''}
 <div class="row between"><h3>الطلبات</h3>${n?`<span class="pill good">${n} جديد</span>`:''}</div>
 ${box.length?box.map(trCard).join(''):'<div class="empty"><p>لا توجد طلبات بعد. ستظهر هنا فور وصولها.</p></div>'}`}
 
@@ -542,6 +575,7 @@ function backOf(){
 const footer=()=>`<footer class="foot"><button class="linkbtn" data-act="terms">الشروط والخصوصية</button>${USER&&PROFILE?'<button class="linkbtn" data-act="account">حسابي</button>':''}${SUPPORT_WA?`<a class="linkbtn" href="https://wa.me/${SUPPORT_WA}" target="_blank" rel="noopener">الدعم</a>`:''}</footer>`;
 const tab=(a,icon,label,cur)=>`<button class="tab" data-act="${a}" ${cur?'aria-current="page"':''}>${ico(icon,22)}<span>${label}</span></button>`;
 function render(){
+  setBadge();
   if(READY&&USER&&isBanned()&&!['banned','terms','account'].includes(V.name))V={name:'banned'};
   const v=V.name;
   if(v==='admin'&&!ISADMIN){route();return}
@@ -558,7 +592,7 @@ function render(){
     const home=v==='search'||v==='techs',n=D.reqsC.length;
     bar=`<nav class="bar" aria-label="التنقل"><div class="wrap"><div class="dock">${tab('home','mechanic','الفنيون',home)}${tab('reqs','clip','طلباتي'+(n?' ('+n+')':''),!home)}</div></div></nav>`;
   }else if(ROLE==='t'&&['tdash','tprofile'].includes(v)){
-    bar=`<nav class="bar" aria-label="التنقل"><div class="wrap"><div class="dock">${tab('tdash','clip','الطلبات',v==='tdash')}${tab('tprofile','user','ملفي',v==='tprofile')}</div></div></nav>`;
+    bar=`<nav class="bar" aria-label="التنقل"><div class="wrap"><div class="dock">${tab('tdash','clip','الطلبات'+(D.reqsT.some(r=>r.status==='sent')?' ('+D.reqsT.filter(r=>r.status==='sent').length+' جديد)':''),v==='tdash')}${tab('tprofile','user','ملفي',v==='tprofile')}</div></div></nav>`;
   }
   const signed=USER&&!['boot','login','setup'].includes(v);
   const ends=signed?`${ISADMIN?'<button class="link" data-act="admin">الإدارة</button>':''}${ROLE&&v!=='profile'?'<button class="link" data-act="switch">تغيير الحساب</button>':''}<button class="link" data-act="logout">خروج</button>`:'';
@@ -668,6 +702,7 @@ async function act(a,id,el){
       ROLE=null;lsSet('osta-role',null);
       try{await deleteUser(u)}catch(e){toast('تم حذف بياناتك، لكن تعذر حذف الدخول. تواصل مع الإدارة')}
       break}
+    case 'notif':try{await Notification.requestPermission()}catch(e){}render();break;
     case 'vreq':if(await run(()=>setDoc(doc(db,'verifyRequests',uid()),{at:Date.now()})))toast('وصل طلب التوثيق للإدارة');break;
     case 'admin':go('admin');break;
     case 'atab':V.tab=id;render();break;
