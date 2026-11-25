@@ -46,13 +46,17 @@ function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
 const CONFIGURED=firebaseConfig&&firebaseConfig.apiKey&&!String(firebaseConfig.apiKey).startsWith('PASTE');
 let auth=null,db=null;
 let USER=null,PROFILE=null,READY=false,NOTE='';
-const TERMS_V=1;
+const TERMS_V=3;
 const SUPPORT_WA='249117102435'; /* رقم واتساب الدعم بصيغة دولية بدون + ، مثال: 249912345678 */
 let D={techs:[],reviews:[],reqsC:[],reqsT:[],verifs:[],bans:[]};
-let ISADMIN=false,MYVREQ=false,ADM={users:[],reports:[],vreqs:[],reqs:[]};
+let FEES={amount:0,bankak:''},WALLET=null;
+let ISADMIN=false,MYVREQ=false,ADM={users:[],reports:[],vreqs:[],reqs:[],wallets:[]};
+const FEE=()=>+FEES.amount||0;
+const BAL=()=>WALLET?(+WALLET.balance||0):0;
+const money=n=>(+n||0).toLocaleString('ar-EG')+' جنيه';
 let PRIV={};
 let ROLE=lsGet('osta-role');
-let F={hood:'all'},V={name:'boot'},AUTH={mode:'in',err:''},PHOTOS=[];
+let F={hood:'all'},V={name:'boot'},AUTH={mode:'in',err:'',intent:''},PHOTOS=[];
 
 const uid=()=>USER?USER.uid:null;
 const isVerified=id=>D.verifs.some(v=>v.id===id);
@@ -104,20 +108,40 @@ async function run(fn){
 }
 
 /* ---------- session ---------- */
-let unsubs=[];
+let unsubs=[],SESS=0;
 function stopListen(){unsubs.forEach(u=>{try{u()}catch(e){}});unsubs=[]}
 function route(){
   if(!PROFILE){go('profile');return}
   if(isBanned()){go('banned');return}
   if(PROFILE.termsV!==TERMS_V){go('accept');return}
+  const nx=lsGet('osta-next');
+  if(nx&&ROLE==='c'){lsSet('osta-next',null);if(nx.extra&&techById(nx.extra.id)){go(nx.name,nx.extra);return}}
   if(ROLE==='c')go('search');
   else if(ROLE==='t')go(myTech()?'tdash':'signupT');
   else go('welcome');
 }
-async function startSession(){
-  stopListen();READY=false;NOTE='';PRIV={};ISADMIN=false;MYVREQ=false;ADM={users:[],reports:[],vreqs:[],reqs:[]};
+function startGuest(){
+  stopListen();READY=false;NOTE='';
+  const my=++SESS;
   V={name:'boot'};render();
-  const id=USER.uid,got=new Set(),NEED=7;
+  const got=new Set(),NEED=4;
+  const finish=()=>{if(!READY&&my===SESS){READY=true;go('search')}};
+  const mark=k=>{got.add(k);if(!READY&&got.size>=NEED)finish();else if(READY)onData()};
+  const rows=s=>s.docs.map(d=>Object.assign({id:d.id},d.data()));
+  const fail=()=>{NOTE='تعذر تحميل القائمة. حاول مرة ثانية.'};
+  setTimeout(()=>{if(!READY&&my===SESS){NOTE='تعذر الوصول لكل البيانات بعد.';finish()}},10000);
+  unsubs.push(
+    onSnapshot(collection(db,'techs'),s=>{D.techs=rows(s);mark('t')},e=>{fail();mark('t')}),
+    onSnapshot(collectionGroup(db,'reviews'),s=>{D.reviews=s.docs.map(d=>Object.assign({id:d.id,techId:d.ref.parent.parent.id},d.data()));mark('v')},e=>{fail();mark('v')}),
+    onSnapshot(collection(db,'verifications'),s=>{D.verifs=rows(s);mark('f')},e=>{fail();mark('f')}),
+    onSnapshot(collection(db,'bans'),s=>{D.bans=rows(s);mark('b')},e=>{fail();mark('b')})
+  );
+}
+async function startSession(){
+  SESS++;
+  stopListen();READY=false;NOTE='';PRIV={};ISADMIN=false;MYVREQ=false;FEES={amount:0,bankak:''};WALLET=null;ADM={users:[],reports:[],vreqs:[],reqs:[],wallets:[]};
+  V={name:'boot'};render();
+  const id=USER.uid,got=new Set(),NEED=9;
   const finish=()=>{if(!READY){READY=true;route()}};
   const mark=k=>{got.add(k);if(!READY&&got.size>=NEED)finish();else if(READY)onData()};
   const upd=()=>{if(READY)onData()};
@@ -133,13 +157,16 @@ async function startSession(){
     onSnapshot(query(collection(db,'requests'),where('techId','==',id)),s=>{const nx=rows(s);alertNew(D.reqsT,nx);D.reqsT=nx;mark('k')},e=>{fail(e);mark('k')}),
     onSnapshot(collection(db,'verifications'),s=>{D.verifs=rows(s);mark('f')},e=>{fail(e);mark('f')}),
     onSnapshot(collection(db,'bans'),s=>{D.bans=rows(s);mark('b')},e=>{fail(e);mark('b')}),
-    onSnapshot(doc(db,'verifyRequests',id),s=>{MYVREQ=s.exists();mark('m')},e=>{mark('m')})
+    onSnapshot(doc(db,'verifyRequests',id),s=>{MYVREQ=s.exists();mark('m')},e=>{mark('m')}),
+    onSnapshot(doc(db,'settings','fees'),s=>{FEES=Object.assign({amount:0,bankak:''},s.exists()?s.data():{});mark('s')},e=>{mark('s')}),
+    onSnapshot(doc(db,'wallets',id),s=>{WALLET=s.exists()?s.data():null;mark('w')},e=>{mark('w')})
   );
   if(ISADMIN)unsubs.push(
     onSnapshot(collection(db,'users'),s=>{ADM.users=rows(s);upd()},fail),
     onSnapshot(collection(db,'reports'),s=>{ADM.reports=rows(s);upd()},fail),
     onSnapshot(collection(db,'verifyRequests'),s=>{ADM.vreqs=rows(s);upd()},fail),
-    onSnapshot(collection(db,'requests'),s=>{ADM.reqs=rows(s);upd()},fail)
+    onSnapshot(collection(db,'requests'),s=>{ADM.reqs=rows(s);upd()},fail),
+    onSnapshot(collection(db,'wallets'),s=>{ADM.wallets=rows(s);upd()},fail)
   );
 }
 /* ---------- alerts (free, in-app) ---------- */
@@ -218,6 +245,7 @@ function vLogin(){
   const up=AUTH.mode==='up';
   return `${heroHtml}${installCard()}
 <section class="card">
+  ${AUTH.intent==='c'?'<p class="banner">سجّل دخولك لإرسال طلبك للفني.</p>':AUTH.intent==='t'?'<p class="banner">أنشئ حساباً لتسجّل كفني وتستقبل الطلبات.</p>':''}
   <h2>${up?'إنشاء حساب':'تسجيل الدخول'}</h2>
   <button class="btn sec block google" data-act="google">المتابعة بحساب جوجل</button>
   <p class="note">أو بالإيميل</p>
@@ -285,10 +313,11 @@ function vSearch(){
   }).join('');
   const first=PROFILE&&PROFILE.name?String(PROFILE.name).split(' ')[0]:'بك';
   return `
-<div><div class="muted">أهلاً ${esc(first)}</div><h2>ماذا تحتاج اليوم؟</h2></div>
+${USER?`<div><div class="muted">أهلاً ${esc(first)}</div><h2>ماذا تحتاج اليوم؟</h2></div>`:heroHtml+installCard()}
 ${!all.length?`<div class="card"><h3>لا يوجد فنيون مسجلون بعد</h3><p class="muted">سيظهرون هنا فور تسجيلهم.</p></div>`:''}
 <label class="f">الحي<select id="hood"><option value="all">كل الأحياء</option>${hoodOpts(F.hood)}</select></label>
-<div class="tiles">${tiles}</div>`}
+<div class="tiles">${tiles}</div>
+${USER?'':`<section class="card"><h3>هل أنت فني؟</h3><p class="muted small">سجّل في أسطى واستقبل طلبات العملاء في الخرطوم.</p><button class="btn pri block" data-act="guest-tech">سجّل كفني</button><button class="linkbtn" data-act="login">عندي حساب. تسجيل الدخول</button></section>`}`}
 
 function techCard(k){return `
 <button class="tcard" data-act="tech" data-id="${esc(k.id)}">
@@ -324,7 +353,7 @@ function vTech(){
 </div>
 <h3>تقييمات العملاء</h3>
 <div class="card">${revs.length?revs.map(x=>`<div class="rev"><div class="row between"><b>${esc(x.who)}</b>${stars(x.stars)}</div><p>${esc(x.text)}</p></div>`).join(''):'<p class="muted">لا توجد تقييمات بعد.</p>'}</div>
-<button class="linkbtn" data-act="report" data-id="${esc(k.id)}" data-name="${esc(k.name)}">الإبلاغ عن هذا الفني</button>`}
+${USER?`<button class="linkbtn" data-act="report" data-id="${esc(k.id)}" data-name="${esc(k.name)}">الإبلاغ عن هذا الفني</button>`:''}`}
 
 function vRequest(){
   const k=techById(V.id);
@@ -405,7 +434,11 @@ function trCard(r){
     rated:`<span class="pill good">مكتمل</span> ${stars(+r.stars||0)}`
   };
   let act='';
-  if(r.status==='sent')act=`<div class="row"><button class="btn pri grow" data-act="t-accept" data-id="${esc(r.id)}">قبول</button><button class="btn sec grow" data-act="t-reject" data-id="${esc(r.id)}">رفض</button></div>`;
+  if(r.status==='sent'){
+    const f=FEE(),short=f>0&&BAL()<f;
+    act=short?`<p class="banner">رصيدك لا يكفي لقبول الطلب (الرسوم ${money(f)}). اشحن رصيدك من أعلى الصفحة.</p><button class="btn sec block" data-act="t-reject" data-id="${esc(r.id)}">رفض</button>`
+      :`<div class="row"><button class="btn pri grow" data-act="t-accept" data-id="${esc(r.id)}">قبول${f>0?' ('+money(f)+')':''}</button><button class="btn sec grow" data-act="t-reject" data-id="${esc(r.id)}">رفض</button></div>`;
+  }
   if(r.status==='accepted')act=`<button class="btn pri block" data-act="t-done" data-id="${esc(r.id)}">تم إنجاز العمل</button>`;
   return `<article class="card">
     <div class="row"><div class="row">${av(r.customerName)}<b>${esc(r.customerName)}</b></div></div>
@@ -415,6 +448,19 @@ function trCard(r){
     ${pills[r.status]?`<div>${pills[r.status]}</div>`:''}${act}
     <button class="linkbtn" data-act="report" data-id="${esc(r.customerId)}" data-name="${esc(r.customerName)}" data-rid="${esc(r.id)}">الإبلاغ عن هذا العميل</button></article>`}
 
+function walletCard(m){
+  const f=FEE();
+  if(!f&&!WALLET)return '';
+  const low=f>0&&BAL()<f;
+  return `<div class="card"><div class="row between"><h3>رصيدي</h3><b>${money(BAL())}</b></div>
+  ${f>0?`<p class="muted small">يُخصم ${money(f)} من رصيدك عند قبول كل طلب. الرسوم لا تُسترد بعد القبول.</p>`:''}
+  ${low?'<p class="banner">رصيدك لا يكفي لقبول طلبات جديدة. اشحن رصيدك.</p>':''}
+  ${f>0?`<details><summary>كيف أشحن رصيدي؟</summary>
+    <p>1) حوّل المبلغ عبر بنكك إلى الحساب: <b class="ltr">${esc(FEES.bankak||'يحدده الدعم')}</b></p>
+    <p>2) أرسل صورة إشعار التحويل على واتساب الدعم، ونضيف الرصيد.</p>
+    <a class="btn sec block" href="https://wa.me/${SUPPORT_WA}?text=${encodeURIComponent('أرغب بشحن رصيدي في أسطى. الاسم: '+m.name+'، الهاتف: '+PROFILE.phone)}" target="_blank" rel="noopener">إرسال الإشعار على واتساب</a></details>`:''}
+  </div>`}
+
 function vTDash(){
   const m=myTech(),box=inbox();
   const n=box.filter(r=>r.status==='sent').length,on=m.avail!==false;
@@ -423,6 +469,7 @@ function vTDash(){
   <div class="row between"><div><div class="muted">مرحباً</div><h2>${esc(m.name)}</h2>${vbadge(m.id)}<div class="muted">${tradeName(m.trade)} · ${esc(m.hood)}</div></div>
   <button class="toggle" data-act="avail" aria-pressed="${on}">${on?'متاح للعمل':'غير متاح'}</button></div>
 </div>
+${walletCard(m)}
 ${window.Notification&&Notification.permission==='default'?'<div class="card"><h3>فعّل التنبيهات</h3><p class="muted small">يصلك تنبيه بالطلبات الجديدة وصوت واهتزاز وأنت فاتح التطبيق، أو وهو في الخلفية.</p><button class="btn pri block" data-act="notif">تفعيل التنبيهات</button></div>':''}
 <div class="row between"><h3>الطلبات</h3>${n?`<span class="pill good">${n} جديد</span>`:''}</div>
 ${box.length?box.map(trCard).join(''):'<div class="empty"><p>لا توجد طلبات بعد. ستظهر هنا فور وصولها.</p></div>'}`}
@@ -471,7 +518,8 @@ function vTerms(){return `<h2>الشروط والخصوصية</h2>
 <details open><summary>شروط الاستخدام</summary><ol>
 <li>أسطى منصة تعرّف العملاء بالفنيين فقط. ليس طرفاً في الاتفاق بين العميل والفني، ولا يضمن جودة العمل ولا السعر ولا الالتزام بالموعد.</li>
 <li>الفنيون يعملون لحسابهم الخاص وليسوا موظفين عند أسطى. الفني مسؤول عن عمله وعن أي ضرر ينتج عنه.</li>
-<li>السعر يُتفق عليه بين العميل والفني. الدفع نقداً أو بتحويل بنكك يتم بينهما مباشرة. قد تُضاف رسوم خدمة على الفنيين مستقبلاً، وسنعلنها قبل تطبيقها.</li>
+<li>السعر يُتفق عليه بين العميل والفني. الدفع نقداً أو بتحويل بنكك يتم بينهما مباشرة، ولا يأخذ أسطى أي مبلغ من العميل.</li>
+<li>رسوم الفنيين: قد تُخصم من رصيد الفني رسوم خدمة ثابتة عن كل طلب يقبله. تحددها الإدارة وتظهر للفني في صفحته قبل القبول. لا تُسترد بعد قبول الطلب إلا بقرار من الإدارة. شحن الرصيد يتم بتحويل بنكك وتأكيد الإدارة.</li>
 <li>شارة «موثق» تعني أن الإدارة تواصلت مع الفني وتحققت من هويته وخبرته حسب ما قدمه. لا تعني ضماناً لجودة أي عمل.</li>
 <li>يُمنع: تقديم معلومات كاذبة، الاحتيال، الإساءة والتهديد، كتابة تقييمات مزيفة، واستخدام بيانات التواصل لغير الطلب الذي وصلت بسببه.</li>
 <li>التقييم يكتبه العميل بعد الدفع. يجوز للإدارة حذف التقييم المسيء أو المزيف.</li>
@@ -481,7 +529,7 @@ function vTerms(){return `<h2>الشروط والخصوصية</h2>
 </ol></details>
 <details><summary>سياسة الخصوصية</summary><ul>
 <li><b>ما نحفظه:</b> اسمك ورقم هاتفك وإيميل الدخول، ورقم بنكك إن أضفته كفني، وبيانات الطلبات والتقييمات، وملف الفني (المهنة والحي والخبرة والنبذة).</li>
-<li><b>من يراه:</b> ملف الفني العام يراه كل مسجل بدون هاتفه. هاتف العميل لا يراه الفني إلا بعد قبول الطلب، وهاتف الفني ورقم بنكك لا يراهما العميل إلا بعد القبول. تطّلع الإدارة على البيانات عند مراجعة البلاغات وطلبات التوثيق.</li>
+<li><b>من يراه:</b> ملف الفني العام (الاسم والمهنة والحي والخبرة والنبذة والتقييمات) يراه أي زائر للتطبيق حتى بدون تسجيل، ولا يظهر فيه هاتفه. هاتف العميل لا يراه الفني إلا بعد قبول الطلب، وهاتف الفني ورقم بنكك لا يراهما العميل إلا بعد القبول. تطّلع الإدارة على البيانات عند مراجعة البلاغات وطلبات التوثيق.</li>
 <li><b>لا نبيع بياناتك</b> ولا نشاركها مع أي جهة إعلانية.</li>
 <li><b>التخزين:</b> البيانات محفوظة عند خدمة Firebase التابعة لشركة جوجل.</li>
 <li><b>الحذف:</b> من صفحة «حسابي» تحذف حسابك وبياناتك الشخصية (الاسم والهاتف وملف الفني). قد يبقى في سجل الطرف الآخر الطلب القديم والتقييم الذي كتبته.</li>
@@ -515,7 +563,7 @@ ${V.confirm?`<div class="errmsg">هل أنت متأكد من حذف حسابك؟
 function vAdmin(){
   const t=V.tab||'reports';
   const openN=ADM.reports.filter(r=>r.status==='open').length;
-  const tabs=[['reports','البلاغات'+(openN?' ('+openN+')':'')],['verify','التوثيق'+(ADM.vreqs.length?' ('+ADM.vreqs.length+')':'')],['people','الحسابات'],['stats','أرقام']];
+  const tabs=[['reports','البلاغات'+(openN?' ('+openN+')':'')],['verify','التوثيق'+(ADM.vreqs.length?' ('+ADM.vreqs.length+')':'')],['people','الحسابات'],['money','المحفظة'],['stats','أرقام']];
   const seg=`<div class="seg">${tabs.map(([k,l])=>`<button data-act="atab" data-id="${k}" ${k===t?'aria-current="true"':''}>${l}</button>`).join('')}</div>`;
   const userOf=id=>ADM.users.find(x=>x.id===id)||{};
   const phoneLine=id=>{const u=userOf(id);return u.phone?`<a class="linkbtn ltr" href="${waLink(u.phone)}" target="_blank" rel="noopener">${esc(u.phone)} واتساب</a>`:''};
@@ -539,6 +587,14 @@ function vAdmin(){
       <div class="row"><button class="btn pri grow" data-act="a-verify" data-id="${esc(k.id)}">توثيق</button><button class="btn sec grow" data-act="a-vdeny" data-id="${esc(k.id)}">رفض الطلب</button></div>
     </article>`}).join(''):none('لا توجد طلبات توثيق.'))
     +'<h3>الفنيون الموثقون</h3>'+(D.verifs.length?D.verifs.map(v=>{const k=techById(v.id);return k?`<article class="card"><div class="row between"><div><b>${esc(k.name)}</b><div class="muted small">${tradeName(k.trade)} · ${esc(k.hood)}</div></div><button class="btn sec" data-act="a-unverify" data-id="${esc(k.id)}">سحب التوثيق</button></div></article>`:''}).join(''):none('لا يوجد موثقون بعد.'));
+  }else if(t==='money'){
+    const ts=D.techs.slice().sort((a,b)=>String(a.name).localeCompare(String(b.name),'ar'));
+    body=`<form data-form="fees" class="card"><h3>رسوم قبول الطلب</h3>
+      <label class="f">الرسوم على الفني عن كل طلب يقبله (جنيه). اكتب 0 لإيقاف الرسوم<input type="number" name="amount" min="0" max="1000000" required inputmode="numeric" value="${FEE()}"></label>
+      <label class="f">رقم حساب بنكك لاستلام شحن الرصيد<input type="text" name="bankak" inputmode="numeric" maxlength="60" value="${esc(FEES.bankak||'')}"></label>
+      <button class="btn pri block" type="submit">حفظ</button>
+      <p class="muted small">${FEE()>0?'الرسوم مفعّلة. الفني بدون رصيد كافٍ لا يستطيع قبول الطلبات.':'الرسوم متوقفة حالياً. الفنيون يقبلون الطلبات مجاناً.'}</p></form>
+      <h3>أرصدة الفنيين</h3>`+(ts.length?ts.map(k=>{const w=ADM.wallets.find(x=>x.id===k.id);return `<article class="card"><div class="row between"><div><b>${esc(k.name)}</b><div class="muted small">${tradeName(k.trade)} · الرصيد ${money(w?w.balance:0)}</div></div><button class="btn sec" data-act="a-topup" data-id="${esc(k.id)}" data-name="${esc(k.name)}">شحن / خصم</button></div>${phoneLine(k.id)}</article>`}).join(''):none('لا يوجد فنيون.'));
   }else if(t==='people'){
     const us=ADM.users.slice().sort((a,b)=>String(a.name).localeCompare(String(b.name),'ar'));
     body=us.length?us.map(u=>{const k=techById(u.id);return `<article class="card">
@@ -567,6 +623,7 @@ function backOf(){
     case 'request':return ['tech',{id:V.id,trade:V.trade}];
     case 'req':return ['reqs'];
     case 'signupT':return ['welcome'];
+    case 'login':return ['search'];
     case 'terms':case 'report':return V.from||[USER?'search':'login'];
     case 'account':case 'admin':return ROLE==='t'?['tdash']:ROLE==='c'?['search']:['welcome'];
     default:return null;
@@ -587,15 +644,15 @@ function render(){
   let bar='';
   if(v==='tech'){
     const k=techById(V.id),off=k.avail===false;
-    bar=`<div class="bar"><div class="wrap"><div class="dock"><button class="btn pri grow" data-act="request" data-id="${esc(V.id)}" ${off?'disabled':''}>${off?'غير متاح حالياً':'اطلب الخدمة'}</button></div></div></div>`;
-  }else if(ROLE==='c'&&['search','techs','reqs','req'].includes(v)){
+    bar=`<div class="bar"><div class="wrap"><div class="dock"><button class="btn pri grow" data-act="request" data-id="${esc(V.id)}" ${off?'disabled':''}>${off?'غير متاح حالياً':USER?'اطلب الخدمة':'سجّل دخولك واطلب الخدمة'}</button></div></div></div>`;
+  }else if(USER&&ROLE==='c'&&['search','techs','reqs','req'].includes(v)){
     const home=v==='search'||v==='techs',n=D.reqsC.length;
     bar=`<nav class="bar" aria-label="التنقل"><div class="wrap"><div class="dock">${tab('home','mechanic','الفنيون',home)}${tab('reqs','clip','طلباتي'+(n?' ('+n+')':''),!home)}</div></div></nav>`;
   }else if(ROLE==='t'&&['tdash','tprofile'].includes(v)){
     bar=`<nav class="bar" aria-label="التنقل"><div class="wrap"><div class="dock">${tab('tdash','clip','الطلبات'+(D.reqsT.some(r=>r.status==='sent')?' ('+D.reqsT.filter(r=>r.status==='sent').length+' جديد)':''),v==='tdash')}${tab('tprofile','user','ملفي',v==='tprofile')}</div></div></nav>`;
   }
   const signed=USER&&!['boot','login','setup'].includes(v);
-  const ends=signed?`${ISADMIN?'<button class="link" data-act="admin">الإدارة</button>':''}${ROLE&&v!=='profile'?'<button class="link" data-act="switch">تغيير الحساب</button>':''}<button class="link" data-act="logout">خروج</button>`:'';
+  const ends=signed?`${ISADMIN?'<button class="link" data-act="admin">الإدارة</button>':''}${ROLE&&v!=='profile'?'<button class="link" data-act="switch">تغيير الحساب</button>':''}<button class="link" data-act="logout">خروج</button>`:(!USER&&!['boot','login','setup'].includes(v)?'<button class="link" data-act="login">تسجيل الدخول</button>':'');
   app.innerHTML=`
 <header class="top"><div class="wrap"><div class="brand"><span class="mark">${ico('mechanic',21,1.9)}</span><span>أسطى<small>فنيون في الخرطوم</small></span></div><div class="end">${ends}</div></div></header>
 <main class="wrap main">${NOTE?`<div class="banner">${esc(NOTE)}</div>`:''}${b?`<button class="back" data-act="back">→ رجوع</button>`:''}${views[v]()}${['boot','setup'].includes(v)?'':footer()}</main>${bar}`;
@@ -646,7 +703,11 @@ async function act(a,id,el){
     case 'allhoods':F.hood='all';render();break;
     case 'trade':go('techs',{trade:id});break;
     case 'tech':go('tech',{id,trade:V.trade});break;
-    case 'request':go('request',{id,trade:V.trade});break;
+    case 'request':
+      if(!USER){lsSet('osta-next',{name:'request',extra:{id,trade:V.trade}});ROLE='c';lsSet('osta-role','c');AUTH.intent='c';AUTH.mode='up';AUTH.err='';go('login');break}
+      go('request',{id,trade:V.trade});break;
+    case 'login':lsSet('osta-next',null);AUTH.intent='';AUTH.mode='in';AUTH.err='';go('login');break;
+    case 'guest-tech':lsSet('osta-next',null);ROLE='t';lsSet('osta-role','t');AUTH.intent='t';AUTH.mode='up';AUTH.err='';go('login');break;
     case 'reqs':go('reqs');break;
     case 'req':go('req',{id});break;
     case 'pay-cash':case 'pay-bank':
@@ -673,17 +734,21 @@ async function act(a,id,el){
       if(ok){V.rate=0;toast('شكراً لتقييمك')}
       break}
     case 'avail':{const m=myTech();await run(()=>updateDoc(doc(db,'techs',m.id),{avail:m.avail===false}));break}
-    case 't-accept':
+    case 't-accept':{
+      const f=FEE();
+      if(f>0&&BAL()<f){toast('رصيدك لا يكفي لقبول الطلب');break}
       await run(async()=>{
         const b=writeBatch(db);
         b.update(doc(db,'requests',id),{status:'accepted'});
         b.set(doc(db,'requests',id,'private','tech'),{phone:PROFILE.phone,bankak:PROFILE.bankak||''});
+        if(f>0)b.update(doc(db,'wallets',uid()),{balance:BAL()-f,lastRid:id});
         await b.commit();
-      });break;
+      });break}
     case 't-reject':await run(()=>updateDoc(doc(db,'requests',id),{status:'rejected'}));break;
     case 't-done':await run(()=>updateDoc(doc(db,'requests',id),{status:'done'}));break;
     case 'terms':go('terms',{from:here()});break;
-    case 'report':go('report',{targetId:id,targetName:el.dataset.name,rid:el.dataset.rid||'',from:here()});break;
+    case 'report':if(!USER){toast('سجّل دخولك أولاً للإبلاغ');break}
+      go('report',{targetId:id,targetName:el.dataset.name,rid:el.dataset.rid||'',from:here()});break;
     case 'account':go('account');break;
     case 'del1':V.confirm=true;render();break;
     case 'del0':V.confirm=false;render();break;
@@ -712,6 +777,21 @@ async function act(a,id,el){
     case 'a-unban':await run(()=>deleteDoc(doc(db,'bans',id)));break;
     case 'a-verify':
       await run(async()=>{const b=writeBatch(db);b.set(doc(db,'verifications',id),{at:Date.now()});b.delete(doc(db,'verifyRequests',id));await b.commit()});break;
+    case 'a-topup':{
+      const raw=prompt('المبلغ المراد إضافته لرصيد '+el.dataset.name+' بالجنيه (اكتب رقماً سالباً للخصم):');
+      if(raw==null)break;
+      const amt=Math.round(Number(String(raw).replace(/[٠-٩]/g,d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/[,٬\s]/g,'')));
+      if(!amt||!isFinite(amt)){toast('اكتب رقماً صحيحاً');break}
+      const w=ADM.wallets.find(x=>x.id===id),nb=(w?+w.balance||0:0)+amt;
+      if(nb<0){toast('الرصيد لا يمكن أن يصير سالباً');break}
+      if(!confirm('تأكيد: '+(amt>0?'إضافة ':'خصم ')+money(Math.abs(amt))+' — الرصيد بعد العملية '+money(nb)))break;
+      if(await run(async()=>{
+        const b=writeBatch(db);
+        b.set(doc(db,'wallets',id),{balance:nb});
+        b.set(doc(collection(db,'wallets',id,'log')),{at:Date.now(),amount:amt,note:amt>0?'شحن':'خصم'});
+        await b.commit();
+      }))toast('تم تحديث الرصيد');
+      break}
     case 'a-vdeny':await run(()=>deleteDoc(doc(db,'verifyRequests',id)));break;
     case 'a-unverify':if(confirm('سحب شارة التوثيق من هذا الفني؟'))await run(()=>deleteDoc(doc(db,'verifications',id)));break;
     case 'tdash':go('tdash');break;
@@ -764,6 +844,11 @@ app.addEventListener('submit',async e=>{
       });
       if(ok){PROFILE=p;go('tdash')}
       break}
+    case 'fees':{
+      const x={amount:Math.max(0,Math.round(+d.amount||0)),bankak:(d.bankak||'').trim()};
+      ok=await run(()=>setDoc(doc(db,'settings','fees'),x));
+      if(ok)toast('تم حفظ الإعدادات');
+      break}
     case 'accept':{
       const x={termsV:TERMS_V,termsAt:Date.now()};
       ok=await run(()=>updateDoc(doc(db,'users',uid()),x));
@@ -797,7 +882,7 @@ else{
   auth=getAuth(fb);db=getFirestore(fb);
   onAuthStateChanged(auth,u=>{
     USER=u;
-    if(!u){stopListen();PROFILE=null;READY=true;D={techs:[],reviews:[],reqsC:[],reqsT:[],verifs:[],bans:[]};ISADMIN=false;MYVREQ=false;ADM={users:[],reports:[],vreqs:[],reqs:[]};PRIV={};go('login')}
+    if(!u){stopListen();PROFILE=null;READY=true;D={techs:[],reviews:[],reqsC:[],reqsT:[],verifs:[],bans:[]};ISADMIN=false;MYVREQ=false;FEES={amount:0,bankak:''};WALLET=null;ADM={users:[],reports:[],vreqs:[],reqs:[],wallets:[]};PRIV={};startGuest()}
     else startSession();
   });
 }
