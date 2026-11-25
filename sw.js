@@ -1,6 +1,6 @@
 // خدمة بسيطة لتثبيت التطبيق: تجلب أحدث نسخة من الإنترنت أولاً،
 // وإذا انقطع الاتصال تعرض آخر نسخة محفوظة من واجهة التطبيق.
-const VERSION = 'osta-v7';
+const VERSION = 'osta-v8';
 const SHELL = ['./', 'index.html', 'app.js', 'styles.css', 'firebase-config.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {

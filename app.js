@@ -1,7 +1,7 @@
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import {getAuth,onAuthStateChanged,GoogleAuthProvider,signInWithPopup,signInWithRedirect,
   createUserWithEmailAndPassword,signInWithEmailAndPassword,sendPasswordResetEmail,signOut,deleteUser} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-import {getFirestore,collection,collectionGroup,doc,getDoc,setDoc,updateDoc,deleteDoc,onSnapshot,query,where,writeBatch}
+import {getFirestore,collection,collectionGroup,doc,getDoc,getDocs,setDoc,updateDoc,deleteDoc,onSnapshot,query,where,writeBatch}
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import {firebaseConfig} from './firebase-config.js';
 
@@ -50,6 +50,8 @@ const TERMS_V=3;
 const SUPPORT_WA='249117102435'; /* رقم واتساب الدعم بصيغة دولية بدون + ، مثال: 249912345678 */
 let D={techs:[],reviews:[],reqsC:[],reqsT:[],verifs:[],bans:[]};
 let FEES={amount:0,bankak:''},WALLET=null;
+let OWNPH=[],PHC={};
+const SLOTS=['p1','p2','p3','p4','p5','p6'];
 let ISADMIN=false,MYVREQ=false,ADM={users:[],reports:[],vreqs:[],reqs:[],wallets:[]};
 const FEE=()=>+FEES.amount||0;
 const BAL=()=>WALLET?(+WALLET.balance||0):0;
@@ -121,7 +123,7 @@ function route(){
   else go('welcome');
 }
 function startGuest(){
-  stopListen();READY=false;NOTE='';
+  stopListen();READY=false;NOTE='';OWNPH=[];PHC={};
   const my=++SESS;
   V={name:'boot'};render();
   const got=new Set(),NEED=4;
@@ -159,7 +161,8 @@ async function startSession(){
     onSnapshot(collection(db,'bans'),s=>{D.bans=rows(s);mark('b')},e=>{fail(e);mark('b')}),
     onSnapshot(doc(db,'verifyRequests',id),s=>{MYVREQ=s.exists();mark('m')},e=>{mark('m')}),
     onSnapshot(doc(db,'settings','fees'),s=>{FEES=Object.assign({amount:0,bankak:''},s.exists()?s.data():{});mark('s')},e=>{mark('s')}),
-    onSnapshot(doc(db,'wallets',id),s=>{WALLET=s.exists()?s.data():null;mark('w')},e=>{mark('w')})
+    onSnapshot(doc(db,'wallets',id),s=>{WALLET=s.exists()?s.data():null;mark('w')},e=>{mark('w')}),
+    onSnapshot(collection(db,'techs',id,'photos'),s=>{OWNPH=rows(s).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));upd()},e=>{})
   );
   if(ISADMIN)unsubs.push(
     onSnapshot(collection(db,'users'),s=>{ADM.users=rows(s);upd()},fail),
@@ -169,6 +172,58 @@ async function startSession(){
     onSnapshot(collection(db,'wallets'),s=>{ADM.wallets=rows(s);upd()},fail)
   );
 }
+/* ---------- photos (stored as small compressed images in Firestore) ---------- */
+function photosOf(id){
+  if(!(id in PHC)){
+    PHC[id]='loading';
+    getDocs(collection(db,'techs',id,'photos'))
+      .then(sn=>{PHC[id]=sn.docs.map(d=>Object.assign({id:d.id},d.data())).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0))})
+      .catch(()=>{PHC[id]=[]})
+      .then(()=>{if(READY&&V.name==='tech'&&V.id===id)render()});
+  }
+  return PHC[id];
+}
+function shrink(file){
+  return new Promise((res,rej)=>{
+    const url=URL.createObjectURL(file),img=new Image();
+    img.onload=()=>{
+      URL.revokeObjectURL(url);
+      let side=800,q=.7;
+      for(let i=0;i<6;i++){
+        const sc=Math.min(1,side/Math.max(img.width,img.height));
+        const c=document.createElement('canvas');
+        c.width=Math.max(1,Math.round(img.width*sc));c.height=Math.max(1,Math.round(img.height*sc));
+        c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+        const d=c.toDataURL('image/jpeg',q);
+        if(d.length<=240000)return res(d);
+        q=Math.max(.35,q-.1);if(i===2)side=600;
+      }
+      rej(new Error('big'));
+    };
+    img.onerror=()=>{URL.revokeObjectURL(url);rej(new Error('bad'))};
+    img.src=url;
+  });
+}
+async function uploadPhotos(files){
+  const free=SLOTS.filter(x=>!OWNPH.some(p=>p.id===x));
+  files=files.slice(0,free.length);
+  if(!files.length){toast('وصلت للحد الأقصى: 6 صور');return}
+  toast('جارٍ رفع الصور');
+  let n=0,done=0;
+  for(const f of files){
+    const data=await shrink(f).catch(()=>null);
+    if(!data){toast('تعذر قراءة إحدى الصور');continue}
+    const ok=await run(()=>setDoc(doc(db,'techs',uid(),'photos',free[n++]),{data,createdAt:Date.now()}));
+    if(!ok)break;
+    done++;
+  }
+  if(done)toast(done===1?'تمت إضافة الصورة':'تمت إضافة '+done+' صور');
+}
+const zoomEl=document.createElement('div');
+zoomEl.id='zoom';zoomEl.hidden=true;zoomEl.innerHTML='<img alt="">';
+document.body.appendChild(zoomEl);
+zoomEl.addEventListener('click',()=>{zoomEl.hidden=true});
+
 /* ---------- alerts (free, in-app) ---------- */
 function ping(msg){
   toast(msg);
@@ -351,6 +406,7 @@ function vTech(){
   <p>${esc(k.bio)}</p>
   <p class="muted small">السعر يُتفق عليه مع الفني بعد معاينة العمل.</p>
 </div>
+${(()=>{const ph=photosOf(k.id);return Array.isArray(ph)&&ph.length?`<h3>صور من أعماله</h3><div class="card"><div class="ph">${ph.map(x=>`<div class="phw"><button class="phb" data-act="zoom" aria-label="تكبير الصورة"><img src="${x.data}" alt="من أعمال ${esc(k.name)}" loading="lazy"></button>${ISADMIN?`<button class="phx" data-act="a-delphoto" data-id="${esc(k.id)}" data-slot="${esc(x.id)}" aria-label="حذف الصورة">×</button>`:''}</div>`).join('')}</div></div>`:''})()}
 <h3>تقييمات العملاء</h3>
 <div class="card">${revs.length?revs.map(x=>`<div class="rev"><div class="row between"><b>${esc(x.who)}</b>${stars(x.stars)}</div><p>${esc(x.text)}</p></div>`).join(''):'<p class="muted">لا توجد تقييمات بعد.</p>'}</div>
 ${USER?`<button class="linkbtn" data-act="report" data-id="${esc(k.id)}" data-name="${esc(k.name)}">الإبلاغ عن هذا الفني</button>`:''}`}
@@ -476,7 +532,7 @@ ${box.length?box.map(trCard).join(''):'<div class="empty"><p>لا توجد طل�
 
 function vTProfile(){
   const m=myTech(),r=rateOf(m),revs=reviewsOf(m);
-  const photos=PHOTOS.length?`<div class="ph">${PHOTOS.map(u=>`<img src="${u}" alt="من أعمال ${esc(m.name)}">`).join('')}</div>`:`<p class="muted">لم تضف صوراً بعد. الصور تزيد ثقة العملاء بك.</p>`;
+  const photos=OWNPH.length?`<div class="ph">${OWNPH.map(x=>`<div class="phw"><button class="phb" data-act="zoom" aria-label="تكبير الصورة"><img src="${x.data}" alt="من أعمال ${esc(m.name)}"></button><button class="phx" data-act="delphoto" data-id="${esc(x.id)}" aria-label="حذف الصورة">×</button></div>`).join('')}</div>`:`<p class="muted">لم تضف صوراً بعد. الصور تزيد ثقة العملاء بك.</p>`;
   return `
 <div class="card">
   <div class="row">${av(m.name,true)}<div><h2>${esc(m.name)}</h2>${vbadge(m.id)}<div class="muted">${tradeName(m.trade)} · ${esc(m.hood)}</div></div></div>
@@ -492,9 +548,8 @@ function vTProfile(){
 <div class="card">${isVerified(m.id)?'<p><span class="vbadge">✓ موثق</span> حسابك موثق، وتظهر الشارة للعملاء بجانب اسمك.</p>':MYVREQ?'<p>طلب التوثيق قيد المراجعة. ستتواصل معك الإدارة على هاتفك.</p>':'<p>الحساب الموثق يحصل على ثقة أكبر وطلبات أكثر. تتواصل معك الإدارة على هاتفك للتحقق من هويتك وخبرتك.</p><button class="btn pri block" data-act="vreq">اطلب توثيق حسابي</button>'}</div>
 <h3>صور أعمالي</h3>
 <div class="card">${photos}
-  <label class="btn sec" for="photo">إضافة صور</label>
-  <input type="file" id="photo" accept="image/*" multiple hidden>
-  <p class="muted small">الصور تظهر لك هنا مؤقتاً ولا تُحفظ بعد. حفظ الصور هو أحد التحسينات القادمة.</p>
+  ${OWNPH.length<SLOTS.length?`<label class="btn sec" for="photo">إضافة صور</label><input type="file" id="photo" accept="image/*" multiple hidden>`:'<p class="muted small">وصلت للحد الأقصى (6 صور). احذف صورة لإضافة غيرها.</p>'}
+  <p class="muted small">تظهر الصور لكل زوار التطبيق على صفحتك. أضف حتى 6 صور واضحة لأعمالك.</p>
 </div>
 <h3>تقييمات العملاء</h3>
 <div class="card">${revs.length?revs.map(x=>`<div class="rev"><div class="row between"><b>${esc(x.who)}</b>${stars(x.stars)}</div><p>${esc(x.text)}</p></div>`).join(''):`<p class="muted">لا توجد تقييمات بعد. ستظهر هنا بعد أول عمل.</p>`}</div>`}
@@ -530,6 +585,7 @@ function vTerms(){return `<h2>الشروط والخصوصية</h2>
 <details><summary>سياسة الخصوصية</summary><ul>
 <li><b>ما نحفظه:</b> اسمك ورقم هاتفك وإيميل الدخول، ورقم بنكك إن أضفته كفني، وبيانات الطلبات والتقييمات، وملف الفني (المهنة والحي والخبرة والنبذة).</li>
 <li><b>من يراه:</b> ملف الفني العام (الاسم والمهنة والحي والخبرة والنبذة والتقييمات) يراه أي زائر للتطبيق حتى بدون تسجيل، ولا يظهر فيه هاتفه. هاتف العميل لا يراه الفني إلا بعد قبول الطلب، وهاتف الفني ورقم بنكك لا يراهما العميل إلا بعد القبول. تطّلع الإدارة على البيانات عند مراجعة البلاغات وطلبات التوثيق.</li>
+<li><b>الصور:</b> الصور التي يضيفها الفني لأعماله تظهر لأي زائر. لا ترفع صوراً فيها بيانات شخصية.</li>
 <li><b>لا نبيع بياناتك</b> ولا نشاركها مع أي جهة إعلانية.</li>
 <li><b>التخزين:</b> البيانات محفوظة عند خدمة Firebase التابعة لشركة جوجل.</li>
 <li><b>الحذف:</b> من صفحة «حسابي» تحذف حسابك وبياناتك الشخصية (الاسم والهاتف وملف الفني). قد يبقى في سجل الطرف الآخر الطلب القديم والتقييم الذي كتبته.</li>
@@ -759,7 +815,7 @@ async function act(a,id,el){
       const ok=await run(async()=>{
         const b=writeBatch(db);
         b.delete(doc(db,'verifyRequests',u.uid));
-        if(myTech())b.delete(doc(db,'techs',u.uid));
+        if(myTech()){SLOTS.forEach(x=>b.delete(doc(db,'techs',u.uid,'photos',x)));b.delete(doc(db,'techs',u.uid))}
         b.delete(doc(db,'users',u.uid));
         await b.commit();
       });
@@ -768,6 +824,9 @@ async function act(a,id,el){
       try{await deleteUser(u)}catch(e){toast('تم حذف بياناتك، لكن تعذر حذف الدخول. تواصل مع الإدارة')}
       break}
     case 'notif':try{await Notification.requestPermission()}catch(e){}render();break;
+    case 'zoom':{const im=el.querySelector('img');if(im){zoomEl.querySelector('img').src=im.src;zoomEl.hidden=false}break}
+    case 'delphoto':if(confirm('حذف هذه الصورة؟'))await run(()=>deleteDoc(doc(db,'techs',uid(),'photos',id)));break;
+    case 'a-delphoto':if(confirm('حذف هذه الصورة من ملف الفني؟')){if(await run(()=>deleteDoc(doc(db,'techs',id,'photos',el.dataset.slot)))){delete PHC[id];render()}}break;
     case 'vreq':if(await run(()=>setDoc(doc(db,'verifyRequests',uid()),{at:Date.now()})))toast('وصل طلب التوثيق للإدارة');break;
     case 'admin':go('admin');break;
     case 'atab':V.tab=id;render();break;
@@ -810,8 +869,8 @@ app.addEventListener('change',e=>{
     $('#recName').textContent=f?f.name:'لم يتم اختيار صورة';
     $('#payBank').disabled=!f;
   }else if(t.id==='photo'){
-    for(const f of t.files)PHOTOS.push(URL.createObjectURL(f));
-    render();
+    const fl=[...t.files];t.value='';
+    uploadPhotos(fl);
   }
 });
 app.addEventListener('submit',async e=>{
