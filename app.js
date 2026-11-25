@@ -1,7 +1,7 @@
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import {getAuth,onAuthStateChanged,GoogleAuthProvider,signInWithPopup,signInWithRedirect,
-  createUserWithEmailAndPassword,signInWithEmailAndPassword,sendPasswordResetEmail,signOut} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-import {getFirestore,collection,collectionGroup,doc,getDoc,setDoc,updateDoc,onSnapshot,query,where,writeBatch}
+  createUserWithEmailAndPassword,signInWithEmailAndPassword,sendPasswordResetEmail,signOut,deleteUser} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+import {getFirestore,collection,collectionGroup,doc,getDoc,setDoc,updateDoc,deleteDoc,onSnapshot,query,where,writeBatch}
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import {firebaseConfig} from './firebase-config.js';
 
@@ -46,12 +46,23 @@ function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
 const CONFIGURED=firebaseConfig&&firebaseConfig.apiKey&&!String(firebaseConfig.apiKey).startsWith('PASTE');
 let auth=null,db=null;
 let USER=null,PROFILE=null,READY=false,NOTE='';
-let D={techs:[],reviews:[],reqsC:[],reqsT:[]};
+const TERMS_V=1;
+const SUPPORT_WA=''; /* رقم واتساب الدعم بصيغة دولية بدون + ، مثال: 249912345678 */
+let D={techs:[],reviews:[],reqsC:[],reqsT:[],verifs:[],bans:[]};
+let ISADMIN=false,MYVREQ=false,ADM={users:[],reports:[],vreqs:[],reqs:[]};
 let PRIV={};
 let ROLE=lsGet('osta-role');
 let F={hood:'all'},V={name:'boot'},AUTH={mode:'in',err:''},PHOTOS=[];
 
 const uid=()=>USER?USER.uid:null;
+const isVerified=id=>D.verifs.some(v=>v.id===id);
+const isBannedId=id=>D.bans.some(b=>b.id===id);
+const isBanned=()=>!!USER&&isBannedId(USER.uid);
+const vbadge=id=>isVerified(id)?'<span class="vbadge" title="موثق من الإدارة">✓ موثق</span>':'';
+const here=()=>[V.name,{id:V.id,trade:V.trade}];
+const REASONS={fraud:'احتيال أو طلب مال بطريقة مشبوهة',behavior:'إساءة أو سلوك غير لائق',quality:'عمل سيئ أو عدم التزام',info:'معلومات كاذبة في الملف',other:'سبب آخر'};
+const dt=t=>t?new Date(t).toLocaleDateString('ar-EG'):'';
+const waLink=p=>'https://wa.me/249'+String(p||'').replace(/^0/,'');
 const techById=id=>D.techs.find(k=>k.id===id);
 const myTech=()=>techById(uid());
 const allReqs=()=>{const m=new Map();D.reqsC.concat(D.reqsT).forEach(r=>m.set(r.id,r));return [...m.values()].sort((a,b)=>(b.createdAt||0)-(a.createdAt||0))};
@@ -97,30 +108,44 @@ let unsubs=[];
 function stopListen(){unsubs.forEach(u=>{try{u()}catch(e){}});unsubs=[]}
 function route(){
   if(!PROFILE){go('profile');return}
+  if(isBanned()){go('banned');return}
+  if(PROFILE.termsV!==TERMS_V){go('accept');return}
   if(ROLE==='c')go('search');
   else if(ROLE==='t')go(myTech()?'tdash':'signupT');
   else go('welcome');
 }
 async function startSession(){
-  stopListen();READY=false;NOTE='';PRIV={};
+  stopListen();READY=false;NOTE='';PRIV={};ISADMIN=false;MYVREQ=false;ADM={users:[],reports:[],vreqs:[],reqs:[]};
   V={name:'boot'};render();
-  const id=USER.uid,got=new Set();
+  const id=USER.uid,got=new Set(),NEED=7;
   const finish=()=>{if(!READY){READY=true;route()}};
-  const mark=k=>{got.add(k);if(!READY&&got.size>=4)finish();else if(READY)onData()};
+  const mark=k=>{got.add(k);if(!READY&&got.size>=NEED)finish();else if(READY)onData()};
+  const upd=()=>{if(READY)onData()};
+  const rows=s=>s.docs.map(d=>Object.assign({id:d.id},d.data()));
   const fail=e=>{NOTE=e&&e.code==='permission-denied'?'ما عندك صلاحية لقراءة بعض البيانات.':'تعذر تحميل البيانات. قد تكون القائمة قديمة.'};
   setTimeout(()=>{if(!READY){NOTE='تعذر الوصول لكل البيانات بعد. قد تكون القائمة قديمة.';finish()}},10000);
   try{const s=await getDoc(doc(db,'users',id));PROFILE=s.exists()?s.data():null}catch(e){fail(e)}
+  try{ISADMIN=(await getDoc(doc(db,'admins',id))).exists()}catch(e){ISADMIN=false}
   unsubs.push(
-    onSnapshot(collection(db,'techs'),s=>{D.techs=s.docs.map(d=>Object.assign({id:d.id},d.data()));mark('t')},e=>{fail(e);mark('t')}),
+    onSnapshot(collection(db,'techs'),s=>{D.techs=rows(s);mark('t')},e=>{fail(e);mark('t')}),
     onSnapshot(collectionGroup(db,'reviews'),s=>{D.reviews=s.docs.map(d=>Object.assign({id:d.id,techId:d.ref.parent.parent.id},d.data()));mark('v')},e=>{fail(e);mark('v')}),
-    onSnapshot(query(collection(db,'requests'),where('customerId','==',id)),s=>{D.reqsC=s.docs.map(d=>Object.assign({id:d.id},d.data()));mark('c')},e=>{fail(e);mark('c')}),
-    onSnapshot(query(collection(db,'requests'),where('techId','==',id)),s=>{D.reqsT=s.docs.map(d=>Object.assign({id:d.id},d.data()));mark('k')},e=>{fail(e);mark('k')})
+    onSnapshot(query(collection(db,'requests'),where('customerId','==',id)),s=>{D.reqsC=rows(s);mark('c')},e=>{fail(e);mark('c')}),
+    onSnapshot(query(collection(db,'requests'),where('techId','==',id)),s=>{D.reqsT=rows(s);mark('k')},e=>{fail(e);mark('k')}),
+    onSnapshot(collection(db,'verifications'),s=>{D.verifs=rows(s);mark('f')},e=>{fail(e);mark('f')}),
+    onSnapshot(collection(db,'bans'),s=>{D.bans=rows(s);mark('b')},e=>{fail(e);mark('b')}),
+    onSnapshot(doc(db,'verifyRequests',id),s=>{MYVREQ=s.exists();mark('m')},e=>{mark('m')})
+  );
+  if(ISADMIN)unsubs.push(
+    onSnapshot(collection(db,'users'),s=>{ADM.users=rows(s);upd()},fail),
+    onSnapshot(collection(db,'reports'),s=>{ADM.reports=rows(s);upd()},fail),
+    onSnapshot(collection(db,'verifyRequests'),s=>{ADM.vreqs=rows(s);upd()},fail),
+    onSnapshot(collection(db,'requests'),s=>{ADM.reqs=rows(s);upd()},fail)
   );
 }
 function onData(){
   if(!READY)return;
   const v=V.name;
-  if(['boot','login','setup','profile','signupC','signupT','request'].includes(v))return;
+  if(['boot','login','setup','profile','signupC','signupT','request','accept','report','terms','account'].includes(v))return;
   if(v==='req'){
     const r=allReqs().find(x=>x.id===V.id);
     if(r&&V.sig===sigOf(r))return;
@@ -135,7 +160,7 @@ const stars=r=>`<span class="stars" role="img" aria-label="${r.toFixed(1)} من 
 const hoodOpts=sel=>HOODS.map(h=>`<option value="${h.n}" ${sel===h.n?'selected':''}>${h.n} (${h.c})</option>`).join('');
 const tradeOpts=sel=>TRADES.map(t=>`<option value="${t.id}" ${sel===t.id?'selected':''}>${t.name}</option>`).join('');
 const ratingLine=k=>{const r=rateOf(k);return r.n?`${stars(r.avg)} <span class="small">${r.avg.toFixed(1)}</span> <span class="muted small">(${r.n})</span>`:'<span class="pill good">جديد</span>'};
-const pool=()=>D.techs.filter(k=>k.id!==uid());
+const pool=()=>D.techs.filter(k=>k.id!==uid()&&!isBannedId(k.id));
 
 /* ---------- views ---------- */
 const heroHtml=`<section class="hero">
@@ -145,6 +170,12 @@ const heroHtml=`<section class="hero">
   <span class="bg-ic" aria-hidden="true">${ico('mechanic',230,1.2)}</span>
 </section>`;
 
+let INSTALL=null;
+const isInstalled=()=>window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches;
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();INSTALL=e;if(['welcome','login'].includes(V.name))render()});
+window.addEventListener('appinstalled',()=>{INSTALL=null;toast('تم تثبيت أسطى على جوالك');if(['welcome','login'].includes(V.name))render()});
+const installCard=()=>INSTALL&&!isInstalled()?`<section class="card"><h3>ثبّت أسطى على جوالك</h3><p class="muted small">يظهر كتطبيق على الشاشة الرئيسية ويفتح بسرعة بدون المتصفح.</p><button class="btn pri block" data-act="install">تثبيت التطبيق</button></section>`:'';
+
 function vBoot(){return `<div class="skel"></div><div class="skel"></div><div class="skel"></div><p class="note">جارٍ التحميل</p>`}
 
 function vSetup(){return `<div class="card"><h2>الربط مع Firebase لم يكتمل</h2>
@@ -153,7 +184,7 @@ function vSetup(){return `<div class="card"><h2>الربط مع Firebase لم ي
 
 function vLogin(){
   const up=AUTH.mode==='up';
-  return `${heroHtml}
+  return `${heroHtml}${installCard()}
 <section class="card">
   <h2>${up?'إنشاء حساب':'تسجيل الدخول'}</h2>
   <button class="btn sec block google" data-act="google">المتابعة بحساب جوجل</button>
@@ -177,10 +208,11 @@ function vProfile(){return `
   <label class="f">الاسم<input type="text" name="name" required autocomplete="name" value="${esc((USER&&USER.displayName)||'')}" placeholder="مثال: أحمد محمد"></label>
   <label class="f">رقم الهاتف<input type="tel" name="phone" required inputmode="tel" pattern="0[19][0-9]{8}" title="رقم سوداني من 10 أرقام يبدأ بـ 09 أو 01" placeholder="09XXXXXXXX"></label>
   <p class="muted small">رقمك يصل للفني فقط بعد ما يقبل طلبك.</p>
+  <label class="chk"><input type="checkbox" name="agree" required><span>قرأت <button type="button" class="linkbtn" data-act="terms">شروط الاستخدام وسياسة الخصوصية</button> وأوافق عليها</span></label>
   <button class="btn pri block" type="submit">حفظ ومتابعة</button>
 </form>`}
 
-function vWelcome(){return `${heroHtml}
+function vWelcome(){return `${heroHtml}${installCard()}
 <div class="stack">
   <button class="btn pri block" data-act="role-c">أحتاج إلى فني</button>
   <button class="btn sec block" data-act="role-t">أنا فني وأبحث عن عمل</button>
@@ -230,7 +262,7 @@ function techCard(k){return `
 <button class="tcard" data-act="tech" data-id="${esc(k.id)}">
   ${av(k.name)}
   <span class="info">
-    <b>${esc(k.name)}</b>
+    <b>${esc(k.name)}${vbadge(k.id)}</b>
     <span class="meta">${ico(k.trade,15)}<span>${tradeName(k.trade)} · ${esc(k.hood)}</span></span>
     <span>${ratingLine(k)}${k.avail===false?' <span class="pill warn">غير متاح حالياً</span>':''}</span>
   </span>
@@ -249,7 +281,7 @@ function vTech(){
   return `
 <div class="card">
   <div class="row">${av(k.name,true)}
-    <div><h2>${esc(k.name)}</h2><div class="muted">${tradeName(k.trade)} · ${esc(k.hood)}</div></div></div>
+    <div><h2>${esc(k.name)}</h2>${vbadge(k.id)}<div class="muted">${tradeName(k.trade)} · ${esc(k.hood)}</div></div></div>
   <div class="stats">
     <div><b>${r.n?r.avg.toFixed(1):'جديد'}</b><span>التقييم</span></div>
     <div><b>${r.n}</b><span>عدد التقييمات</span></div>
@@ -259,7 +291,8 @@ function vTech(){
   <p class="muted small">السعر يُتفق عليه مع الفني بعد معاينة العمل.</p>
 </div>
 <h3>تقييمات العملاء</h3>
-<div class="card">${revs.length?revs.map(x=>`<div class="rev"><div class="row between"><b>${esc(x.who)}</b>${stars(x.stars)}</div><p>${esc(x.text)}</p></div>`).join(''):'<p class="muted">لا توجد تقييمات بعد.</p>'}</div>`}
+<div class="card">${revs.length?revs.map(x=>`<div class="rev"><div class="row between"><b>${esc(x.who)}</b>${stars(x.stars)}</div><p>${esc(x.text)}</p></div>`).join(''):'<p class="muted">لا توجد تقييمات بعد.</p>'}</div>
+<button class="linkbtn" data-act="report" data-id="${esc(k.id)}" data-name="${esc(k.name)}">الإبلاغ عن هذا الفني</button>`}
 
 function vRequest(){
   const k=techById(V.id);
@@ -327,7 +360,8 @@ function vReq(){
   <p>${esc(r.desc)}</p>
 </div>
 ${r.status==='rejected'?'':`<div class="card"><ol class="tl">${tl}</ol></div>`}
-<div class="card">${panel}</div>`}
+<div class="card">${panel}</div>
+<button class="linkbtn" data-act="report" data-id="${esc(r.techId)}" data-name="${esc(k.name)}" data-rid="${esc(r.id)}">الإبلاغ عن هذا الفني</button>`}
 
 function trCard(r){
   const cp=hasPriv(r)?priv(r.id,'customer'):null;
@@ -346,14 +380,15 @@ function trCard(r){
     <p>${esc(r.desc)}</p>
     <div class="muted small">${esc(r.hood)} · ${esc(r.when)} · دفع ${esc(r.pay)}</div>
     ${cp&&cp!=='loading'&&cp.phone?`<div class="small">هاتف العميل: <b style="direction:ltr;unicode-bidi:isolate">${esc(cp.phone)}</b></div>`:''}
-    ${pills[r.status]?`<div>${pills[r.status]}</div>`:''}${act}</article>`}
+    ${pills[r.status]?`<div>${pills[r.status]}</div>`:''}${act}
+    <button class="linkbtn" data-act="report" data-id="${esc(r.customerId)}" data-name="${esc(r.customerName)}" data-rid="${esc(r.id)}">الإبلاغ عن هذا العميل</button></article>`}
 
 function vTDash(){
   const m=myTech(),box=inbox();
   const n=box.filter(r=>r.status==='sent').length,on=m.avail!==false;
   return `
 <div class="card">
-  <div class="row between"><div><div class="muted">مرحباً</div><h2>${esc(m.name)}</h2><div class="muted">${tradeName(m.trade)} · ${esc(m.hood)}</div></div>
+  <div class="row between"><div><div class="muted">مرحباً</div><h2>${esc(m.name)}</h2>${vbadge(m.id)}<div class="muted">${tradeName(m.trade)} · ${esc(m.hood)}</div></div>
   <button class="toggle" data-act="avail" aria-pressed="${on}">${on?'متاح للعمل':'غير متاح'}</button></div>
 </div>
 <div class="row between"><h3>الطلبات</h3>${n?`<span class="pill good">${n} جديد</span>`:''}</div>
@@ -364,7 +399,7 @@ function vTProfile(){
   const photos=PHOTOS.length?`<div class="ph">${PHOTOS.map(u=>`<img src="${u}" alt="من أعمال ${esc(m.name)}">`).join('')}</div>`:`<p class="muted">لم تضف صوراً بعد. الصور تزيد ثقة العملاء بك.</p>`;
   return `
 <div class="card">
-  <div class="row">${av(m.name,true)}<div><h2>${esc(m.name)}</h2><div class="muted">${tradeName(m.trade)} · ${esc(m.hood)}</div></div></div>
+  <div class="row">${av(m.name,true)}<div><h2>${esc(m.name)}</h2>${vbadge(m.id)}<div class="muted">${tradeName(m.trade)} · ${esc(m.hood)}</div></div></div>
   <div class="stats">
     <div><b>${r.n?r.avg.toFixed(1):'جديد'}</b><span>التقييم</span></div>
     <div><b>${r.n}</b><span>عدد التقييمات</span></div>
@@ -373,6 +408,8 @@ function vTProfile(){
   <p>${esc(m.bio)}</p>
   <div class="muted small">هاتف ${esc(PROFILE.phone)}${PROFILE.bankak?' · بنكك '+esc(PROFILE.bankak):''}</div>
 </div>
+<h3>التوثيق</h3>
+<div class="card">${isVerified(m.id)?'<p><span class="vbadge">✓ موثق</span> حسابك موثق، وتظهر الشارة للعملاء بجانب اسمك.</p>':MYVREQ?'<p>طلب التوثيق قيد المراجعة. ستتواصل معك الإدارة على هاتفك.</p>':'<p>الحساب الموثق يحصل على ثقة أكبر وطلبات أكثر. تتواصل معك الإدارة على هاتفك للتحقق من هويتك وخبرتك.</p><button class="btn pri block" data-act="vreq">اطلب توثيق حسابي</button>'}</div>
 <h3>صور أعمالي</h3>
 <div class="card">${photos}
   <label class="btn sec" for="photo">إضافة صور</label>
@@ -382,6 +419,113 @@ function vTProfile(){
 <h3>تقييمات العملاء</h3>
 <div class="card">${revs.length?revs.map(x=>`<div class="rev"><div class="row between"><b>${esc(x.who)}</b>${stars(x.stars)}</div><p>${esc(x.text)}</p></div>`).join(''):`<p class="muted">لا توجد تقييمات بعد. ستظهر هنا بعد أول عمل.</p>`}</div>`}
 
+
+const supportLink=()=>SUPPORT_WA?`<a class="btn sec block" href="https://wa.me/${SUPPORT_WA}" target="_blank" rel="noopener">تواصل مع الدعم عبر واتساب</a>`:'';
+function vBanned(){return `<section class="card"><h2>تم إيقاف حسابك</h2>
+<p>أوقفت الإدارة هذا الحساب لمخالفة شروط الاستخدام، ولا يمكنك إرسال الطلبات أو استقبالها حالياً.</p>
+<p class="muted small">${SUPPORT_WA?'إذا تعتقد أن الإيقاف حدث بالخطأ، تواصل مع الدعم.':'إذا تعتقد أن الإيقاف حدث بالخطأ، تواصل مع إدارة أسطى.'}</p>
+${supportLink()}<button class="btn sec block" data-act="account">حسابي وحذفه</button></section>`}
+
+function vAccept(){return `<h2>شروط الاستخدام</h2>
+<form data-form="accept" class="card">
+  <p>قبل المتابعة، اقرأ شروط الاستخدام وسياسة الخصوصية لأسطى ووافق عليها.</p>
+  <label class="chk"><input type="checkbox" name="agree" required><span>قرأت <button type="button" class="linkbtn" data-act="terms">الشروط وسياسة الخصوصية</button> وأوافق عليها</span></label>
+  <button class="btn pri block" type="submit">موافق ومتابعة</button>
+</form>`}
+
+function vTerms(){return `<h2>الشروط والخصوصية</h2>
+<section class="card terms">
+<details open><summary>شروط الاستخدام</summary><ol>
+<li>أسطى منصة تعرّف العملاء بالفنيين فقط. ليس طرفاً في الاتفاق بين العميل والفني، ولا يضمن جودة العمل ولا السعر ولا الالتزام بالموعد.</li>
+<li>الفنيون يعملون لحسابهم الخاص وليسوا موظفين عند أسطى. الفني مسؤول عن عمله وعن أي ضرر ينتج عنه.</li>
+<li>السعر يُتفق عليه بين العميل والفني. الدفع نقداً أو بتحويل بنكك يتم بينهما مباشرة. قد تُضاف رسوم خدمة على الفنيين مستقبلاً، وسنعلنها قبل تطبيقها.</li>
+<li>شارة «موثق» تعني أن الإدارة تواصلت مع الفني وتحققت من هويته وخبرته حسب ما قدمه. لا تعني ضماناً لجودة أي عمل.</li>
+<li>يُمنع: تقديم معلومات كاذبة، الاحتيال، الإساءة والتهديد، كتابة تقييمات مزيفة، واستخدام بيانات التواصل لغير الطلب الذي وصلت بسببه.</li>
+<li>التقييم يكتبه العميل بعد الدفع. يجوز للإدارة حذف التقييم المسيء أو المزيف.</li>
+<li>يمكن لأي مستخدم الإبلاغ عن حساب. للإدارة إيقاف أي حساب يخالف هذه الشروط.</li>
+<li>الاستخدام لمن عمره 18 سنة فأكثر.</li>
+<li>عند تغيير الشروط تغييراً جوهرياً سنطلب موافقتك عليها من جديد.</li>
+</ol></details>
+<details><summary>سياسة الخصوصية</summary><ul>
+<li><b>ما نحفظه:</b> اسمك ورقم هاتفك وإيميل الدخول، ورقم بنكك إن أضفته كفني، وبيانات الطلبات والتقييمات، وملف الفني (المهنة والحي والخبرة والنبذة).</li>
+<li><b>من يراه:</b> ملف الفني العام يراه كل مسجل بدون هاتفه. هاتف العميل لا يراه الفني إلا بعد قبول الطلب، وهاتف الفني ورقم بنكك لا يراهما العميل إلا بعد القبول. تطّلع الإدارة على البيانات عند مراجعة البلاغات وطلبات التوثيق.</li>
+<li><b>لا نبيع بياناتك</b> ولا نشاركها مع أي جهة إعلانية.</li>
+<li><b>التخزين:</b> البيانات محفوظة عند خدمة Firebase التابعة لشركة جوجل.</li>
+<li><b>الحذف:</b> من صفحة «حسابي» تحذف حسابك وبياناتك الشخصية (الاسم والهاتف وملف الفني). قد يبقى في سجل الطرف الآخر الطلب القديم والتقييم الذي كتبته.</li>
+</ul></details>
+</section>`}
+
+function vReport(){return `<h2>إبلاغ</h2>
+<form data-form="report" class="card">
+  <p>الإبلاغ عن <b>${esc(V.targetName)}</b></p>
+  <label class="f">سبب البلاغ<select name="reason">${Object.keys(REASONS).map(k=>`<option value="${k}">${REASONS[k]}</option>`).join('')}</select></label>
+  <label class="f">التفاصيل<textarea name="text" required minlength="5" maxlength="500" placeholder="اشرح ما حدث"></textarea></label>
+  <button class="btn pri block" type="submit">إرسال البلاغ</button>
+  <p class="muted small">يصل البلاغ للإدارة فقط ولا يراه الطرف الذي أبلغت عنه.</p>
+</form>`}
+
+function vAccount(){
+  const p=PROFILE||{};
+  return `<h2>حسابي</h2>
+<section class="card">
+  <div class="kv"><span>الاسم</span><b>${esc(p.name)}</b></div>
+  <div class="kv"><span>الهاتف</span><b class="ltr">${esc(p.phone)}</b></div>
+  <div class="kv"><span>الإيميل</span><b class="ltr">${esc((USER&&USER.email)||'—')}</b></div>
+  ${ISADMIN?'<div class="kv"><span>الصلاحية</span><span class="pill good">مدير</span></div>':''}
+  <div class="acct"><div><div class="muted small">معرّف الحساب</div><b id="myuid" style="font-size:13px;letter-spacing:0">${esc(uid())}</b></div><button class="btn sec" data-act="copy" data-t="#myuid">نسخ</button></div>
+</section>
+<section class="card"><h3>حذف الحساب</h3>
+<p class="muted small">يحذف اسمك ورقم هاتفك وملفك كفني نهائياً، ولا يمكن التراجع. قد يبقى في سجل الطرف الآخر الطلب القديم والتقييم.</p>
+${V.confirm?`<div class="errmsg">هل أنت متأكد من حذف حسابك؟</div><div class="row"><button class="btn pri grow" data-act="del2">نعم، احذف</button><button class="btn sec grow" data-act="del0">إلغاء</button></div>`:'<button class="btn sec block" data-act="del1">حذف حسابي</button>'}
+</section>`}
+
+function vAdmin(){
+  const t=V.tab||'reports';
+  const openN=ADM.reports.filter(r=>r.status==='open').length;
+  const tabs=[['reports','البلاغات'+(openN?' ('+openN+')':'')],['verify','التوثيق'+(ADM.vreqs.length?' ('+ADM.vreqs.length+')':'')],['people','الحسابات'],['stats','أرقام']];
+  const seg=`<div class="seg">${tabs.map(([k,l])=>`<button data-act="atab" data-id="${k}" ${k===t?'aria-current="true"':''}>${l}</button>`).join('')}</div>`;
+  const userOf=id=>ADM.users.find(x=>x.id===id)||{};
+  const phoneLine=id=>{const u=userOf(id);return u.phone?`<a class="linkbtn ltr" href="${waLink(u.phone)}" target="_blank" rel="noopener">${esc(u.phone)} واتساب</a>`:''};
+  const banBtn=id=>id===uid()?'':isBannedId(id)?`<button class="btn sec grow" data-act="a-unban" data-id="${esc(id)}">رفع الإيقاف</button>`:`<button class="btn sec grow" data-act="a-ban" data-id="${esc(id)}">إيقاف الحساب</button>`;
+  const none=m=>`<div class="empty"><p>${m}</p></div>`;
+  let body='';
+  if(t==='reports'){
+    const rs=ADM.reports.slice().sort((a,b)=>(a.status==='open'?0:1)-(b.status==='open'?0:1)||(b.createdAt||0)-(a.createdAt||0));
+    body=rs.length?rs.map(r=>`<article class="card">
+      <div class="row between"><b>${esc(REASONS[r.reason]||r.reason)}</b><span class="pill ${r.status==='open'?'warn':'good'}">${r.status==='open'?'مفتوح':'تمت المعالجة'}</span></div>
+      <p>${esc(r.text)}</p>
+      <div class="muted small">المُبلِغ: ${esc(r.reporterName)} · المُبلَغ عنه: ${esc(r.targetName)}${isBannedId(r.targetId)?' (موقوف)':''} · ${dt(r.createdAt)}</div>
+      ${phoneLine(r.targetId)}
+      <div class="row">${r.status==='open'?`<button class="btn pri grow" data-act="a-close" data-id="${esc(r.id)}">تمت المعالجة</button>`:`<button class="btn sec grow" data-act="a-reopen" data-id="${esc(r.id)}">إعادة فتح</button>`}${banBtn(r.targetId)}</div>
+    </article>`).join(''):none('لا توجد بلاغات.');
+  }else if(t==='verify'){
+    const reqs=ADM.vreqs.filter(q=>techById(q.id));
+    body='<h3>طلبات التوثيق</h3>'+(reqs.length?reqs.map(q=>{const k=techById(q.id);return `<article class="card">
+      <div class="row">${av(k.name)}<div><b>${esc(k.name)}</b><div class="muted small">${tradeName(k.trade)} · ${esc(k.hood)} · ${esc(k.years)} سنوات</div></div></div>
+      <p>${esc(k.bio)}</p>${phoneLine(k.id)}
+      <div class="row"><button class="btn pri grow" data-act="a-verify" data-id="${esc(k.id)}">توثيق</button><button class="btn sec grow" data-act="a-vdeny" data-id="${esc(k.id)}">رفض الطلب</button></div>
+    </article>`}).join(''):none('لا توجد طلبات توثيق.'))
+    +'<h3>الفنيون الموثقون</h3>'+(D.verifs.length?D.verifs.map(v=>{const k=techById(v.id);return k?`<article class="card"><div class="row between"><div><b>${esc(k.name)}</b><div class="muted small">${tradeName(k.trade)} · ${esc(k.hood)}</div></div><button class="btn sec" data-act="a-unverify" data-id="${esc(k.id)}">سحب التوثيق</button></div></article>`:''}).join(''):none('لا يوجد موثقون بعد.'));
+  }else if(t==='people'){
+    const us=ADM.users.slice().sort((a,b)=>String(a.name).localeCompare(String(b.name),'ar'));
+    body=us.length?us.map(u=>{const k=techById(u.id);return `<article class="card">
+      <div class="row between"><div><b>${esc(u.name)}</b>${vbadge(u.id)}<div class="muted small">${k?'فني · '+tradeName(k.trade)+' · '+esc(k.hood):'عميل'}${isBannedId(u.id)?' · موقوف':''}</div></div></div>
+      ${phoneLine(u.id)}<div class="row">${banBtn(u.id)}</div></article>`}).join(''):none('لا توجد حسابات.');
+  }else{
+    const rq=ADM.reqs,c=s=>rq.filter(r=>r.status===s).length;
+    body=`<section class="card">
+      <div class="kv"><span>إجمالي الحسابات</span><b>${ADM.users.length}</b></div>
+      <div class="kv"><span>الفنيون</span><b>${D.techs.length}</b></div>
+      <div class="kv"><span>الفنيون الموثقون</span><b>${D.verifs.length}</b></div>
+      <div class="kv"><span>الحسابات الموقوفة</span><b>${D.bans.length}</b></div>
+      <div class="kv"><span>بلاغات مفتوحة</span><b>${openN}</b></div></section>
+    <h3>الطلبات</h3><section class="card">
+      <div class="kv"><span>الإجمالي</span><b>${rq.length}</b></div>
+      ${['sent','accepted','rejected','done','paid','rated'].map(s=>`<div class="kv"><span>${STATUS_TXT[s]}</span><b>${c(s)}</b></div>`).join('')}
+      <div class="kv"><span>طلبات تم دفعها (مدفوع + مكتمل)</span><b>${c('paid')+c('rated')}</b></div></section>`;
+  }
+  return `<h2>الإدارة</h2>${seg}${body}`}
+
 /* ---------- shell ---------- */
 function backOf(){
   switch(V.name){
@@ -390,16 +534,21 @@ function backOf(){
     case 'request':return ['tech',{id:V.id,trade:V.trade}];
     case 'req':return ['reqs'];
     case 'signupT':return ['welcome'];
+    case 'terms':case 'report':return V.from||[USER?'search':'login'];
+    case 'account':case 'admin':return ROLE==='t'?['tdash']:ROLE==='c'?['search']:['welcome'];
     default:return null;
   }
 }
+const footer=()=>`<footer class="foot"><button class="linkbtn" data-act="terms">الشروط والخصوصية</button>${USER&&PROFILE?'<button class="linkbtn" data-act="account">حسابي</button>':''}${SUPPORT_WA?`<a class="linkbtn" href="https://wa.me/${SUPPORT_WA}" target="_blank" rel="noopener">الدعم</a>`:''}</footer>`;
 const tab=(a,icon,label,cur)=>`<button class="tab" data-act="${a}" ${cur?'aria-current="page"':''}>${ico(icon,22)}<span>${label}</span></button>`;
 function render(){
+  if(READY&&USER&&isBanned()&&!['banned','terms','account'].includes(V.name))V={name:'banned'};
   const v=V.name;
+  if(v==='admin'&&!ISADMIN){route();return}
   if((v==='tech'||v==='request')&&!techById(V.id)){go('search');return}
   if(v==='req'&&!D.reqsC.find(r=>r.id===V.id)){go('reqs');return}
   if((v==='tdash'||v==='tprofile')&&!myTech()){go('signupT');return}
-  const views={boot:vBoot,setup:vSetup,login:vLogin,profile:vProfile,welcome:vWelcome,signupT:vSignupT,search:vSearch,techs:vTechs,tech:vTech,request:vRequest,reqs:vReqs,req:vReq,tdash:vTDash,tprofile:vTProfile};
+  const views={boot:vBoot,setup:vSetup,login:vLogin,profile:vProfile,welcome:vWelcome,signupT:vSignupT,search:vSearch,techs:vTechs,tech:vTech,request:vRequest,reqs:vReqs,req:vReq,tdash:vTDash,tprofile:vTProfile,banned:vBanned,accept:vAccept,terms:vTerms,report:vReport,account:vAccount,admin:vAdmin};
   const b=backOf();
   let bar='';
   if(v==='tech'){
@@ -412,10 +561,10 @@ function render(){
     bar=`<nav class="bar" aria-label="التنقل"><div class="wrap"><div class="dock">${tab('tdash','clip','الطلبات',v==='tdash')}${tab('tprofile','user','ملفي',v==='tprofile')}</div></div></nav>`;
   }
   const signed=USER&&!['boot','login','setup'].includes(v);
-  const ends=signed?`${ROLE&&v!=='profile'?'<button class="link" data-act="switch">تغيير الحساب</button>':''}<button class="link" data-act="logout">خروج</button>`:'';
+  const ends=signed?`${ISADMIN?'<button class="link" data-act="admin">الإدارة</button>':''}${ROLE&&v!=='profile'?'<button class="link" data-act="switch">تغيير الحساب</button>':''}<button class="link" data-act="logout">خروج</button>`:'';
   app.innerHTML=`
 <header class="top"><div class="wrap"><div class="brand"><span class="mark">${ico('mechanic',21,1.9)}</span><span>أسطى<small>فنيون في الخرطوم</small></span></div><div class="end">${ends}</div></div></header>
-<main class="wrap main">${NOTE?`<div class="banner">${esc(NOTE)}</div>`:''}${b?`<button class="back" data-act="back">→ رجوع</button>`:''}${views[v]()}</main>${bar}`;
+<main class="wrap main">${NOTE?`<div class="banner">${esc(NOTE)}</div>`:''}${b?`<button class="back" data-act="back">→ رجوع</button>`:''}${views[v]()}${['boot','setup'].includes(v)?'':footer()}</main>${bar}`;
 }
 
 /* ---------- auth ---------- */
@@ -434,6 +583,11 @@ function authFail(e){
 /* ---------- events ---------- */
 async function act(a,id,el){
   switch(a){
+    case 'install':{
+      if(!INSTALL)break;
+      INSTALL.prompt();
+      try{await INSTALL.userChoice}catch(e){}
+      INSTALL=null;render();break}
     case 'google':{
       AUTH.err='';
       const p=new GoogleAuthProvider();
@@ -494,6 +648,37 @@ async function act(a,id,el){
       });break;
     case 't-reject':await run(()=>updateDoc(doc(db,'requests',id),{status:'rejected'}));break;
     case 't-done':await run(()=>updateDoc(doc(db,'requests',id),{status:'done'}));break;
+    case 'terms':go('terms',{from:here()});break;
+    case 'report':go('report',{targetId:id,targetName:el.dataset.name,rid:el.dataset.rid||'',from:here()});break;
+    case 'account':go('account');break;
+    case 'del1':V.confirm=true;render();break;
+    case 'del0':V.confirm=false;render();break;
+    case 'del2':{
+      const u=auth.currentUser;if(!u)break;
+      const last=u.metadata&&u.metadata.lastSignInTime?Date.parse(u.metadata.lastSignInTime):0;
+      if(Date.now()-last>5*60*1000){V.confirm=false;render();toast('لأمانك: اضغط خروج ثم ادخل من جديد، وبعدها احذف الحساب مباشرة');break}
+      const ok=await run(async()=>{
+        const b=writeBatch(db);
+        b.delete(doc(db,'verifyRequests',u.uid));
+        if(myTech())b.delete(doc(db,'techs',u.uid));
+        b.delete(doc(db,'users',u.uid));
+        await b.commit();
+      });
+      if(!ok)break;
+      ROLE=null;lsSet('osta-role',null);
+      try{await deleteUser(u)}catch(e){toast('تم حذف بياناتك، لكن تعذر حذف الدخول. تواصل مع الإدارة')}
+      break}
+    case 'vreq':if(await run(()=>setDoc(doc(db,'verifyRequests',uid()),{at:Date.now()})))toast('وصل طلب التوثيق للإدارة');break;
+    case 'admin':go('admin');break;
+    case 'atab':V.tab=id;render();break;
+    case 'a-close':await run(()=>updateDoc(doc(db,'reports',id),{status:'closed'}));break;
+    case 'a-reopen':await run(()=>updateDoc(doc(db,'reports',id),{status:'open'}));break;
+    case 'a-ban':if(confirm('إيقاف هذا الحساب؟ لن يستطيع إرسال أو استقبال الطلبات.'))await run(()=>setDoc(doc(db,'bans',id),{at:Date.now(),reason:''}));break;
+    case 'a-unban':await run(()=>deleteDoc(doc(db,'bans',id)));break;
+    case 'a-verify':
+      await run(async()=>{const b=writeBatch(db);b.set(doc(db,'verifications',id),{at:Date.now()});b.delete(doc(db,'verifyRequests',id));await b.commit()});break;
+    case 'a-vdeny':await run(()=>deleteDoc(doc(db,'verifyRequests',id)));break;
+    case 'a-unverify':if(confirm('سحب شارة التوثيق من هذا الفني؟'))await run(()=>deleteDoc(doc(db,'verifications',id)));break;
     case 'tdash':go('tdash');break;
     case 'tprofile':go('tprofile');break;
   }
@@ -529,12 +714,12 @@ app.addEventListener('submit',async e=>{
       }catch(er){authFail(er)}
       break;
     case 'profile':{
-      const p={name:d.name.trim(),phone:d.phone.trim(),bankak:''};
+      const p={name:d.name.trim(),phone:d.phone.trim(),bankak:'',termsV:TERMS_V,termsAt:Date.now()};
       ok=await run(()=>setDoc(doc(db,'users',uid()),p));
       if(ok){PROFILE=p;route()}
       break}
     case 'signupT':{
-      const p={name:d.name.trim(),phone:PROFILE.phone,bankak:(d.bankak||'').trim()};
+      const p=Object.assign({},PROFILE,{name:d.name.trim(),bankak:(d.bankak||'').trim()});
       const t={name:p.name,trade:d.trade,hood:d.hood,years:+d.years,bio:d.bio.trim(),avail:true,createdAt:Date.now()};
       ok=await run(async()=>{
         const b=writeBatch(db);
@@ -543,6 +728,16 @@ app.addEventListener('submit',async e=>{
         await b.commit();
       });
       if(ok){PROFILE=p;go('tdash')}
+      break}
+    case 'accept':{
+      const x={termsV:TERMS_V,termsAt:Date.now()};
+      ok=await run(()=>updateDoc(doc(db,'users',uid()),x));
+      if(ok){PROFILE=Object.assign({},PROFILE,x);route()}
+      break}
+    case 'report':{
+      const r={reporterId:uid(),reporterName:PROFILE.name,targetId:V.targetId,targetName:String(V.targetName||'').slice(0,60),requestId:V.rid||'',reason:d.reason,text:d.text.trim(),status:'open',createdAt:Date.now()};
+      ok=await run(()=>setDoc(doc(collection(db,'reports')),r));
+      if(ok){toast('وصل بلاغك للإدارة. شكراً');const b=V.from||['search'];go(b[0],b[1])}
       break}
     case 'request':{
       const rid=doc(collection(db,'requests')).id;
@@ -567,7 +762,7 @@ else{
   auth=getAuth(fb);db=getFirestore(fb);
   onAuthStateChanged(auth,u=>{
     USER=u;
-    if(!u){stopListen();PROFILE=null;READY=true;D={techs:[],reviews:[],reqsC:[],reqsT:[]};PRIV={};go('login')}
+    if(!u){stopListen();PROFILE=null;READY=true;D={techs:[],reviews:[],reqsC:[],reqsT:[],verifs:[],bans:[]};ISADMIN=false;MYVREQ=false;ADM={users:[],reports:[],vreqs:[],reqs:[]};PRIV={};go('login')}
     else startSession();
   });
 }
