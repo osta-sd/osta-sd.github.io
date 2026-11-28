@@ -1,7 +1,7 @@
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import {getAuth,onAuthStateChanged,GoogleAuthProvider,signInWithPopup,signInWithRedirect,
   createUserWithEmailAndPassword,signInWithEmailAndPassword,sendPasswordResetEmail,signOut,deleteUser} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-import {getFirestore,collection,collectionGroup,doc,getDoc,getDocs,setDoc,updateDoc,deleteDoc,onSnapshot,query,where,writeBatch}
+import {getFirestore,collection,collectionGroup,doc,getDoc,setDoc,updateDoc,deleteDoc,onSnapshot,query,where,writeBatch}
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import {firebaseConfig} from './firebase-config.js';
 
@@ -46,19 +46,17 @@ function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
 const CONFIGURED=firebaseConfig&&firebaseConfig.apiKey&&!String(firebaseConfig.apiKey).startsWith('PASTE');
 let auth=null,db=null;
 let USER=null,PROFILE=null,READY=false,NOTE='';
-const TERMS_V=3;
+const TERMS_V=2;
 const SUPPORT_WA='249117102435'; /* رقم واتساب الدعم بصيغة دولية بدون + ، مثال: 249912345678 */
 let D={techs:[],reviews:[],reqsC:[],reqsT:[],verifs:[],bans:[]};
 let FEES={amount:0,bankak:''},WALLET=null;
-let OWNPH=[],PHC={};
-const SLOTS=['p1','p2','p3','p4','p5','p6'];
 let ISADMIN=false,MYVREQ=false,ADM={users:[],reports:[],vreqs:[],reqs:[],wallets:[]};
 const FEE=()=>+FEES.amount||0;
 const BAL=()=>WALLET?(+WALLET.balance||0):0;
 const money=n=>(+n||0).toLocaleString('ar-EG')+' جنيه';
 let PRIV={};
 let ROLE=lsGet('osta-role');
-let F={hood:'all'},V={name:'boot'},AUTH={mode:'in',err:'',intent:''},PHOTOS=[];
+let F={hood:'all'},V={name:'boot'},AUTH={mode:'in',err:''},PHOTOS=[];
 
 const uid=()=>USER?USER.uid:null;
 const isVerified=id=>D.verifs.some(v=>v.id===id);
@@ -110,37 +108,17 @@ async function run(fn){
 }
 
 /* ---------- session ---------- */
-let unsubs=[],SESS=0;
+let unsubs=[];
 function stopListen(){unsubs.forEach(u=>{try{u()}catch(e){}});unsubs=[]}
 function route(){
   if(!PROFILE){go('profile');return}
   if(isBanned()){go('banned');return}
   if(PROFILE.termsV!==TERMS_V){go('accept');return}
-  const nx=lsGet('osta-next');
-  if(nx&&ROLE==='c'){lsSet('osta-next',null);if(nx.extra&&techById(nx.extra.id)){go(nx.name,nx.extra);return}}
   if(ROLE==='c')go('search');
   else if(ROLE==='t')go(myTech()?'tdash':'signupT');
   else go('welcome');
 }
-function startGuest(){
-  stopListen();READY=false;NOTE='';OWNPH=[];PHC={};
-  const my=++SESS;
-  V={name:'boot'};render();
-  const got=new Set(),NEED=4;
-  const finish=()=>{if(!READY&&my===SESS){READY=true;go('search')}};
-  const mark=k=>{got.add(k);if(!READY&&got.size>=NEED)finish();else if(READY)onData()};
-  const rows=s=>s.docs.map(d=>Object.assign({id:d.id},d.data()));
-  const fail=()=>{NOTE='تعذر تحميل القائمة. حاول مرة ثانية.'};
-  setTimeout(()=>{if(!READY&&my===SESS){NOTE='تعذر الوصول لكل البيانات بعد.';finish()}},10000);
-  unsubs.push(
-    onSnapshot(collection(db,'techs'),s=>{D.techs=rows(s);mark('t')},e=>{fail();mark('t')}),
-    onSnapshot(collectionGroup(db,'reviews'),s=>{D.reviews=s.docs.map(d=>Object.assign({id:d.id,techId:d.ref.parent.parent.id},d.data()));mark('v')},e=>{fail();mark('v')}),
-    onSnapshot(collection(db,'verifications'),s=>{D.verifs=rows(s);mark('f')},e=>{fail();mark('f')}),
-    onSnapshot(collection(db,'bans'),s=>{D.bans=rows(s);mark('b')},e=>{fail();mark('b')})
-  );
-}
 async function startSession(){
-  SESS++;
   stopListen();READY=false;NOTE='';PRIV={};ISADMIN=false;MYVREQ=false;FEES={amount:0,bankak:''};WALLET=null;ADM={users:[],reports:[],vreqs:[],reqs:[],wallets:[]};
   V={name:'boot'};render();
   const id=USER.uid,got=new Set(),NEED=9;
@@ -161,8 +139,7 @@ async function startSession(){
     onSnapshot(collection(db,'bans'),s=>{D.bans=rows(s);mark('b')},e=>{fail(e);mark('b')}),
     onSnapshot(doc(db,'verifyRequests',id),s=>{MYVREQ=s.exists();mark('m')},e=>{mark('m')}),
     onSnapshot(doc(db,'settings','fees'),s=>{FEES=Object.assign({amount:0,bankak:''},s.exists()?s.data():{});mark('s')},e=>{mark('s')}),
-    onSnapshot(doc(db,'wallets',id),s=>{WALLET=s.exists()?s.data():null;mark('w')},e=>{mark('w')}),
-    onSnapshot(collection(db,'techs',id,'photos'),s=>{OWNPH=rows(s).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));upd()},e=>{})
+    onSnapshot(doc(db,'wallets',id),s=>{WALLET=s.exists()?s.data():null;mark('w')},e=>{mark('w')})
   );
   if(ISADMIN)unsubs.push(
     onSnapshot(collection(db,'users'),s=>{ADM.users=rows(s);upd()},fail),
@@ -172,58 +149,6 @@ async function startSession(){
     onSnapshot(collection(db,'wallets'),s=>{ADM.wallets=rows(s);upd()},fail)
   );
 }
-/* ---------- photos (stored as small compressed images in Firestore) ---------- */
-function photosOf(id){
-  if(!(id in PHC)){
-    PHC[id]='loading';
-    getDocs(collection(db,'techs',id,'photos'))
-      .then(sn=>{PHC[id]=sn.docs.map(d=>Object.assign({id:d.id},d.data())).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0))})
-      .catch(()=>{PHC[id]=[]})
-      .then(()=>{if(READY&&V.name==='tech'&&V.id===id)render()});
-  }
-  return PHC[id];
-}
-function shrink(file){
-  return new Promise((res,rej)=>{
-    const url=URL.createObjectURL(file),img=new Image();
-    img.onload=()=>{
-      URL.revokeObjectURL(url);
-      let side=800,q=.7;
-      for(let i=0;i<6;i++){
-        const sc=Math.min(1,side/Math.max(img.width,img.height));
-        const c=document.createElement('canvas');
-        c.width=Math.max(1,Math.round(img.width*sc));c.height=Math.max(1,Math.round(img.height*sc));
-        c.getContext('2d').drawImage(img,0,0,c.width,c.height);
-        const d=c.toDataURL('image/jpeg',q);
-        if(d.length<=240000)return res(d);
-        q=Math.max(.35,q-.1);if(i===2)side=600;
-      }
-      rej(new Error('big'));
-    };
-    img.onerror=()=>{URL.revokeObjectURL(url);rej(new Error('bad'))};
-    img.src=url;
-  });
-}
-async function uploadPhotos(files){
-  const free=SLOTS.filter(x=>!OWNPH.some(p=>p.id===x));
-  files=files.slice(0,free.length);
-  if(!files.length){toast('وصلت للحد الأقصى: 6 صور');return}
-  toast('جارٍ رفع الصور');
-  let n=0,done=0;
-  for(const f of files){
-    const data=await shrink(f).catch(()=>null);
-    if(!data){toast('تعذر قراءة إحدى الصور');continue}
-    const ok=await run(()=>setDoc(doc(db,'techs',uid(),'photos',free[n++]),{data,createdAt:Date.now()}));
-    if(!ok)break;
-    done++;
-  }
-  if(done)toast(done===1?'تمت إضافة الصورة':'تمت إضافة '+done+' صور');
-}
-const zoomEl=document.createElement('div');
-zoomEl.id='zoom';zoomEl.hidden=true;zoomEl.innerHTML='<img alt="">';
-document.body.appendChild(zoomEl);
-zoomEl.addEventListener('click',()=>{zoomEl.hidden=true});
-
 /* ---------- alerts (free, in-app) ---------- */
 function ping(msg){
   toast(msg);
@@ -300,7 +225,6 @@ function vLogin(){
   const up=AUTH.mode==='up';
   return `${heroHtml}${installCard()}
 <section class="card">
-  ${AUTH.intent==='c'?'<p class="banner">سجّل دخولك لإرسال طلبك للفني.</p>':AUTH.intent==='t'?'<p class="banner">أنشئ حساباً لتسجّل كفني وتستقبل الطلبات.</p>':''}
   <h2>${up?'إنشاء حساب':'تسجيل الدخول'}</h2>
   <button class="btn sec block google" data-act="google">المتابعة بحساب جوجل</button>
   <p class="note">أو بالإيميل</p>
@@ -368,11 +292,10 @@ function vSearch(){
   }).join('');
   const first=PROFILE&&PROFILE.name?String(PROFILE.name).split(' ')[0]:'بك';
   return `
-${USER?`<div><div class="muted">أهلاً ${esc(first)}</div><h2>ماذا تحتاج اليوم؟</h2></div>`:heroHtml+installCard()}
+<div><div class="muted">أهلاً ${esc(first)}</div><h2>ماذا تحتاج اليوم؟</h2></div>
 ${!all.length?`<div class="card"><h3>لا يوجد فنيون مسجلون بعد</h3><p class="muted">سيظهرون هنا فور تسجيلهم.</p></div>`:''}
 <label class="f">الحي<select id="hood"><option value="all">كل الأحياء</option>${hoodOpts(F.hood)}</select></label>
-<div class="tiles">${tiles}</div>
-${USER?'':`<section class="card"><h3>هل أنت فني؟</h3><p class="muted small">سجّل في أسطى واستقبل طلبات العملاء في الخرطوم.</p><button class="btn pri block" data-act="guest-tech">سجّل كفني</button><button class="linkbtn" data-act="login">عندي حساب. تسجيل الدخول</button></section>`}`}
+<div class="tiles">${tiles}</div>`}
 
 function techCard(k){return `
 <button class="tcard" data-act="tech" data-id="${esc(k.id)}">
@@ -406,10 +329,9 @@ function vTech(){
   <p>${esc(k.bio)}</p>
   <p class="muted small">السعر يُتفق عليه مع الفني بعد معاينة العمل.</p>
 </div>
-${(()=>{const ph=photosOf(k.id);return Array.isArray(ph)&&ph.length?`<h3>صور من أعماله</h3><div class="card"><div class="ph">${ph.map(x=>`<div class="phw"><button class="phb" data-act="zoom" aria-label="تكبير الصورة"><img src="${x.data}" alt="من أعمال ${esc(k.name)}" loading="lazy"></button>${ISADMIN?`<button class="phx" data-act="a-delphoto" data-id="${esc(k.id)}" data-slot="${esc(x.id)}" aria-label="حذف الصورة">×</button>`:''}</div>`).join('')}</div></div>`:''})()}
 <h3>تقييمات العملاء</h3>
 <div class="card">${revs.length?revs.map(x=>`<div class="rev"><div class="row between"><b>${esc(x.who)}</b>${stars(x.stars)}</div><p>${esc(x.text)}</p></div>`).join(''):'<p class="muted">لا توجد تقييمات بعد.</p>'}</div>
-${USER?`<button class="linkbtn" data-act="report" data-id="${esc(k.id)}" data-name="${esc(k.name)}">الإبلاغ عن هذا الفني</button>`:''}`}
+<button class="linkbtn" data-act="report" data-id="${esc(k.id)}" data-name="${esc(k.name)}">الإبلاغ عن هذا الفني</button>`}
 
 function vRequest(){
   const k=techById(V.id);
@@ -532,7 +454,7 @@ ${box.length?box.map(trCard).join(''):'<div class="empty"><p>لا توجد طل�
 
 function vTProfile(){
   const m=myTech(),r=rateOf(m),revs=reviewsOf(m);
-  const photos=OWNPH.length?`<div class="ph">${OWNPH.map(x=>`<div class="phw"><button class="phb" data-act="zoom" aria-label="تكبير الصورة"><img src="${x.data}" alt="من أعمال ${esc(m.name)}"></button><button class="phx" data-act="delphoto" data-id="${esc(x.id)}" aria-label="حذف الصورة">×</button></div>`).join('')}</div>`:`<p class="muted">لم تضف صوراً بعد. الصور تزيد ثقة العملاء بك.</p>`;
+  const photos=PHOTOS.length?`<div class="ph">${PHOTOS.map(u=>`<img src="${u}" alt="من أعمال ${esc(m.name)}">`).join('')}</div>`:`<p class="muted">لم تضف صوراً بعد. الصور تزيد ثقة العملاء بك.</p>`;
   return `
 <div class="card">
   <div class="row">${av(m.name,true)}<div><h2>${esc(m.name)}</h2>${vbadge(m.id)}<div class="muted">${tradeName(m.trade)} · ${esc(m.hood)}</div></div></div>
@@ -548,8 +470,9 @@ function vTProfile(){
 <div class="card">${isVerified(m.id)?'<p><span class="vbadge">✓ موثق</span> حسابك موثق، وتظهر الشارة للعملاء بجانب اسمك.</p>':MYVREQ?'<p>طلب التوثيق قيد المراجعة. ستتواصل معك الإدارة على هاتفك.</p>':'<p>الحساب الموثق يحصل على ثقة أكبر وطلبات أكثر. تتواصل معك الإدارة على هاتفك للتحقق من هويتك وخبرتك.</p><button class="btn pri block" data-act="vreq">اطلب توثيق حسابي</button>'}</div>
 <h3>صور أعمالي</h3>
 <div class="card">${photos}
-  ${OWNPH.length<SLOTS.length?`<label class="btn sec" for="photo">إضافة صور</label><input type="file" id="photo" accept="image/*" multiple hidden>`:'<p class="muted small">وصلت للحد الأقصى (6 صور). احذف صورة لإضافة غيرها.</p>'}
-  <p class="muted small">تظهر الصور لكل زوار التطبيق على صفحتك. أضف حتى 6 صور واضحة لأعمالك.</p>
+  <label class="btn sec" for="photo">إضافة صور</label>
+  <input type="file" id="photo" accept="image/*" multiple hidden>
+  <p class="muted small">الصور تظهر لك هنا مؤقتاً ولا تُحفظ بعد. حفظ الصور هو أحد التحسينات القادمة.</p>
 </div>
 <h3>تقييمات العملاء</h3>
 <div class="card">${revs.length?revs.map(x=>`<div class="rev"><div class="row between"><b>${esc(x.who)}</b>${stars(x.stars)}</div><p>${esc(x.text)}</p></div>`).join(''):`<p class="muted">لا توجد تقييمات بعد. ستظهر هنا بعد أول عمل.</p>`}</div>`}
@@ -584,8 +507,7 @@ function vTerms(){return `<h2>الشروط والخصوصية</h2>
 </ol></details>
 <details><summary>سياسة الخصوصية</summary><ul>
 <li><b>ما نحفظه:</b> اسمك ورقم هاتفك وإيميل الدخول، ورقم بنكك إن أضفته كفني، وبيانات الطلبات والتقييمات، وملف الفني (المهنة والحي والخبرة والنبذة).</li>
-<li><b>من يراه:</b> ملف الفني العام (الاسم والمهنة والحي والخبرة والنبذة والتقييمات) يراه أي زائر للتطبيق حتى بدون تسجيل، ولا يظهر فيه هاتفه. هاتف العميل لا يراه الفني إلا بعد قبول الطلب، وهاتف الفني ورقم بنكك لا يراهما العميل إلا بعد القبول. تطّلع الإدارة على البيانات عند مراجعة البلاغات وطلبات التوثيق.</li>
-<li><b>الصور:</b> الصور التي يضيفها الفني لأعماله تظهر لأي زائر. لا ترفع صوراً فيها بيانات شخصية.</li>
+<li><b>من يراه:</b> ملف الفني العام يراه كل مسجل بدون هاتفه. هاتف العميل لا يراه الفني إلا بعد قبول الطلب، وهاتف الفني ورقم بنكك لا يراهما العميل إلا بعد القبول. تطّلع الإدارة على البيانات عند مراجعة البلاغات وطلبات التوثيق.</li>
 <li><b>لا نبيع بياناتك</b> ولا نشاركها مع أي جهة إعلانية.</li>
 <li><b>التخزين:</b> البيانات محفوظة عند خدمة Firebase التابعة لشركة جوجل.</li>
 <li><b>الحذف:</b> من صفحة «حسابي» تحذف حسابك وبياناتك الشخصية (الاسم والهاتف وملف الفني). قد يبقى في سجل الطرف الآخر الطلب القديم والتقييم الذي كتبته.</li>
@@ -679,7 +601,6 @@ function backOf(){
     case 'request':return ['tech',{id:V.id,trade:V.trade}];
     case 'req':return ['reqs'];
     case 'signupT':return ['welcome'];
-    case 'login':return ['search'];
     case 'terms':case 'report':return V.from||[USER?'search':'login'];
     case 'account':case 'admin':return ROLE==='t'?['tdash']:ROLE==='c'?['search']:['welcome'];
     default:return null;
@@ -700,15 +621,15 @@ function render(){
   let bar='';
   if(v==='tech'){
     const k=techById(V.id),off=k.avail===false;
-    bar=`<div class="bar"><div class="wrap"><div class="dock"><button class="btn pri grow" data-act="request" data-id="${esc(V.id)}" ${off?'disabled':''}>${off?'غير متاح حالياً':USER?'اطلب الخدمة':'سجّل دخولك واطلب الخدمة'}</button></div></div></div>`;
-  }else if(USER&&ROLE==='c'&&['search','techs','reqs','req'].includes(v)){
+    bar=`<div class="bar"><div class="wrap"><div class="dock"><button class="btn pri grow" data-act="request" data-id="${esc(V.id)}" ${off?'disabled':''}>${off?'غير متاح حالياً':'اطلب الخدمة'}</button></div></div></div>`;
+  }else if(ROLE==='c'&&['search','techs','reqs','req'].includes(v)){
     const home=v==='search'||v==='techs',n=D.reqsC.length;
     bar=`<nav class="bar" aria-label="التنقل"><div class="wrap"><div class="dock">${tab('home','mechanic','الفنيون',home)}${tab('reqs','clip','طلباتي'+(n?' ('+n+')':''),!home)}</div></div></nav>`;
   }else if(ROLE==='t'&&['tdash','tprofile'].includes(v)){
     bar=`<nav class="bar" aria-label="التنقل"><div class="wrap"><div class="dock">${tab('tdash','clip','الطلبات'+(D.reqsT.some(r=>r.status==='sent')?' ('+D.reqsT.filter(r=>r.status==='sent').length+' جديد)':''),v==='tdash')}${tab('tprofile','user','ملفي',v==='tprofile')}</div></div></nav>`;
   }
   const signed=USER&&!['boot','login','setup'].includes(v);
-  const ends=signed?`${ISADMIN?'<button class="link" data-act="admin">الإدارة</button>':''}${ROLE&&v!=='profile'?'<button class="link" data-act="switch">تغيير الحساب</button>':''}<button class="link" data-act="logout">خروج</button>`:(!USER&&!['boot','login','setup'].includes(v)?'<button class="link" data-act="login">تسجيل الدخول</button>':'');
+  const ends=signed?`${ISADMIN?'<button class="link" data-act="admin">الإدارة</button>':''}${ROLE&&v!=='profile'?'<button class="link" data-act="switch">تغيير الحساب</button>':''}<button class="link" data-act="logout">خروج</button>`:'';
   app.innerHTML=`
 <header class="top"><div class="wrap"><div class="brand"><span class="mark">${ico('mechanic',21,1.9)}</span><span>أسطى<small>فنيون في الخرطوم</small></span></div><div class="end">${ends}</div></div></header>
 <main class="wrap main">${NOTE?`<div class="banner">${esc(NOTE)}</div>`:''}${b?`<button class="back" data-act="back">→ رجوع</button>`:''}${views[v]()}${['boot','setup'].includes(v)?'':footer()}</main>${bar}`;
@@ -759,11 +680,7 @@ async function act(a,id,el){
     case 'allhoods':F.hood='all';render();break;
     case 'trade':go('techs',{trade:id});break;
     case 'tech':go('tech',{id,trade:V.trade});break;
-    case 'request':
-      if(!USER){lsSet('osta-next',{name:'request',extra:{id,trade:V.trade}});ROLE='c';lsSet('osta-role','c');AUTH.intent='c';AUTH.mode='up';AUTH.err='';go('login');break}
-      go('request',{id,trade:V.trade});break;
-    case 'login':lsSet('osta-next',null);AUTH.intent='';AUTH.mode='in';AUTH.err='';go('login');break;
-    case 'guest-tech':lsSet('osta-next',null);ROLE='t';lsSet('osta-role','t');AUTH.intent='t';AUTH.mode='up';AUTH.err='';go('login');break;
+    case 'request':go('request',{id,trade:V.trade});break;
     case 'reqs':go('reqs');break;
     case 'req':go('req',{id});break;
     case 'pay-cash':case 'pay-bank':
@@ -803,8 +720,7 @@ async function act(a,id,el){
     case 't-reject':await run(()=>updateDoc(doc(db,'requests',id),{status:'rejected'}));break;
     case 't-done':await run(()=>updateDoc(doc(db,'requests',id),{status:'done'}));break;
     case 'terms':go('terms',{from:here()});break;
-    case 'report':if(!USER){toast('سجّل دخولك أولاً للإبلاغ');break}
-      go('report',{targetId:id,targetName:el.dataset.name,rid:el.dataset.rid||'',from:here()});break;
+    case 'report':go('report',{targetId:id,targetName:el.dataset.name,rid:el.dataset.rid||'',from:here()});break;
     case 'account':go('account');break;
     case 'del1':V.confirm=true;render();break;
     case 'del0':V.confirm=false;render();break;
@@ -815,7 +731,7 @@ async function act(a,id,el){
       const ok=await run(async()=>{
         const b=writeBatch(db);
         b.delete(doc(db,'verifyRequests',u.uid));
-        if(myTech()){SLOTS.forEach(x=>b.delete(doc(db,'techs',u.uid,'photos',x)));b.delete(doc(db,'techs',u.uid))}
+        if(myTech())b.delete(doc(db,'techs',u.uid));
         b.delete(doc(db,'users',u.uid));
         await b.commit();
       });
@@ -824,9 +740,6 @@ async function act(a,id,el){
       try{await deleteUser(u)}catch(e){toast('تم حذف بياناتك، لكن تعذر حذف الدخول. تواصل مع الإدارة')}
       break}
     case 'notif':try{await Notification.requestPermission()}catch(e){}render();break;
-    case 'zoom':{const im=el.querySelector('img');if(im){zoomEl.querySelector('img').src=im.src;zoomEl.hidden=false}break}
-    case 'delphoto':if(confirm('حذف هذه الصورة؟'))await run(()=>deleteDoc(doc(db,'techs',uid(),'photos',id)));break;
-    case 'a-delphoto':if(confirm('حذف هذه الصورة من ملف الفني؟')){if(await run(()=>deleteDoc(doc(db,'techs',id,'photos',el.dataset.slot)))){delete PHC[id];render()}}break;
     case 'vreq':if(await run(()=>setDoc(doc(db,'verifyRequests',uid()),{at:Date.now()})))toast('وصل طلب التوثيق للإدارة');break;
     case 'admin':go('admin');break;
     case 'atab':V.tab=id;render();break;
@@ -869,8 +782,8 @@ app.addEventListener('change',e=>{
     $('#recName').textContent=f?f.name:'لم يتم اختيار صورة';
     $('#payBank').disabled=!f;
   }else if(t.id==='photo'){
-    const fl=[...t.files];t.value='';
-    uploadPhotos(fl);
+    for(const f of t.files)PHOTOS.push(URL.createObjectURL(f));
+    render();
   }
 });
 app.addEventListener('submit',async e=>{
@@ -941,7 +854,7 @@ else{
   auth=getAuth(fb);db=getFirestore(fb);
   onAuthStateChanged(auth,u=>{
     USER=u;
-    if(!u){stopListen();PROFILE=null;READY=true;D={techs:[],reviews:[],reqsC:[],reqsT:[],verifs:[],bans:[]};ISADMIN=false;MYVREQ=false;FEES={amount:0,bankak:''};WALLET=null;ADM={users:[],reports:[],vreqs:[],reqs:[],wallets:[]};PRIV={};startGuest()}
+    if(!u){stopListen();PROFILE=null;READY=true;D={techs:[],reviews:[],reqsC:[],reqsT:[],verifs:[],bans:[]};ISADMIN=false;MYVREQ=false;FEES={amount:0,bankak:''};WALLET=null;ADM={users:[],reports:[],vreqs:[],reqs:[],wallets:[]};PRIV={};go('login')}
     else startSession();
   });
 }
